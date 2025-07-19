@@ -1,6 +1,7 @@
 import pandas as pd
 import yfinance as yf
 from typing import List, Dict
+import time
 
 # Assuming this script is run from a context where 'b3alloc' is in the python path
 from ..utils_dates import get_b3_trading_calendar
@@ -10,18 +11,23 @@ def fetch_yfinance_data(
     start_date: str,
     end_date: str,
     index_ticker: str = "^BVSP",
+    max_retries: int = 5,
+    backoff_factor: float = 0.5,
 ) -> Dict[str, pd.DataFrame]:
     """
     Fetches historical market data for a list of tickers and a benchmark index.
 
     This function downloads daily Open, High, Low, Close, Adjusted Close, and Volume
     data from Yahoo Finance. It also fetches corporate actions (dividends and splits).
+    It includes a retry mechanism with exponential backoff to handle rate limits.
 
     Args:
         tickers: A list of B3 ticker symbols to download (e.g., ['PETR4.SA', 'VALE3.SA']).
         start_date: The start date for the data query (YYYY-MM-DD).
         end_date: The end date for the data query (YYYY-MM-DD).
         index_ticker: The ticker for the benchmark index (default: ^BVSP for IBOVESPA).
+        max_retries: Maximum number of times to retry the download.
+        backoff_factor: Factor to determine the delay between retries (delay = backoff_factor * 2**attempt).
 
     Returns:
         A dictionary containing:
@@ -34,18 +40,41 @@ def fetch_yfinance_data(
     print(f"Downloading data for {len(tickers)} assets and index {index_ticker}...")
 
     # yfinance is more efficient when downloading all tickers in one call
-    data = yf.download(
-        all_tickers_to_download,
-        start=start_date,
-        end=end_date,
-        auto_adjust=False,  # We want both Close and Adj Close for audit purposes
-        actions=True,       # Fetch dividends and stock splits
-        progress=True,
-        interval="1d"
-    )
+    data = None
+    for attempt in range(max_retries):
+        try:
+            data = yf.download(
+                all_tickers_to_download,
+                start=start_date,
+                end=end_date,
+                auto_adjust=False,  # We want both Close and Adj Close for audit purposes
+                actions=True,       # Fetch dividends and stock splits
+                progress=True,
+                interval="1d"
+            )
+            # If download is successful, break the loop
+            if data is not None and not data.empty:
+                # Basic check to see if we got data for all requested tickers
+                if len(data.columns.get_level_values(1).unique()) == len(all_tickers_to_download):
+                     break
+                else:
+                     print(f"Warning: Data downloaded for {len(data.columns.get_level_values(1).unique())}/{len(all_tickers_to_download)} tickers.")
+                     # Continue loop to retry for missing tickers
+            
+        except Exception as e:
+            print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+            if attempt + 1 == max_retries:
+                print("Max retries reached. Failed to download data.")
+                raise  # Re-raise the last exception
+            
+            sleep_time = backoff_factor * (2 ** attempt)
+            print(f"Waiting for {sleep_time:.2f} seconds before retrying...")
+            time.sleep(sleep_time)
 
-    if data.empty:
-        raise ValueError("Yahoo Finance returned no data. Check tickers and date range.")
+    if data is None or data.empty:
+        # This part is now less likely to be reached, but kept as a safeguard.
+        # The retry loop should handle most failures.
+        raise ValueError("Yahoo Finance returned no data after multiple retries. Check tickers and date range.")
 
     # Separate index from equities
     index_data = data.loc[:, (slice(None), index_ticker)].copy()

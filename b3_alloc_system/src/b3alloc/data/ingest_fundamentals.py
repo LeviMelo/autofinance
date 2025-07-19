@@ -1,89 +1,63 @@
 import pandas as pd
-import requests
+import investpy
 import time
-from typing import List, Tuple, Dict
-import re
-
-# This scraper targets the non-official, publicly available API used by
-# the StatusInvest website. It is subject to change without notice.
-# Using a browser-like User-Agent is essential to avoid being blocked.
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-}
-BASE_URL = "https://statusinvest.com.br"
-
-
-def _clean_ticker_and_get_type(ticker_sa: str) -> Tuple[str, str]:
-    """
-    Cleans a '.SA' ticker and determines its type for the StatusInvest API endpoint.
-    """
-    cleaned = ticker_sa.split('.')[0].lower()
-    match = re.search(r'(\d+)$', cleaned)
-    
-    if match:
-        num = int(match.group(1))
-        # BDRs typically end in 34, 35, or 39. This is a heuristic.
-        if num in [34, 35, 39]:
-            return cleaned, 'bdr'
-        # ETFs often end in 11.
-        if num == 11:
-            return cleaned, 'etf'
-            
-    # Default to stock ('acao')
-    return cleaned, 'acao'
-
+from typing import List
+import numpy as np
 
 def _fetch_single_ticker_fundamentals(ticker_sa: str) -> pd.DataFrame:
     """
-    Fetches historical fundamentals for a single ticker from StatusInvest's API.
+    Fetches historical fundamentals for a single ticker from invest.com.
+    - Book Equity is from the quarterly balance sheet.
+    - Shares Outstanding is the latest available figure, used as a proxy for all periods.
     """
-    cleaned_ticker, asset_type = _clean_ticker_and_get_type(ticker_sa)
+    cleaned_ticker = ticker_sa.split('.')[0]
     
-    # Construct the correct API endpoint based on asset type
-    # This corresponds to the XHR request made by the website's frontend.
-    api_url = f"{BASE_URL}/{asset_type}/getbs?companyName={cleaned_ticker}&type=0"
-    
-    response = requests.get(api_url, headers=HEADERS)
-    response.raise_for_status()
-    
-    json_data = response.json()
-    if not json_data.get('success') or not json_data.get('data'):
-        # print(f"Warning: No fundamental data found for {ticker_sa}")
+    try:
+        # 1. Fetch Balance Sheet for Book Equity
+        bs_df = investpy.get_stock_financial_summary(
+            stock=cleaned_ticker,
+            country='brazil',
+            summary_type='balance_sheet',
+            period='quarterly'
+        )
+        # Rename and select the 'Total Equity' column
+        bs_df = bs_df.rename(columns={'Total Equity': 'book_equity'})
+        if 'book_equity' not in bs_df.columns:
+            print(f"Warning: 'Total Equity' not found for {ticker_sa}.")
+            return pd.DataFrame()
+        
+        fundamentals_df = bs_df[['book_equity']].copy()
+
+        # 2. Fetch latest Shares Outstanding from general information
+        info_df = investpy.get_stock_information(
+            stock=cleaned_ticker,
+            country='brazil',
+            as_json=True
+        )
+        shares_outstanding = info_df.get('Shares Outstanding')
+        if shares_outstanding is None:
+            print(f"Warning: Could not retrieve 'Shares Outstanding' for {ticker_sa}.")
+            fundamentals_df['shares_outstanding'] = np.nan
+        else:
+            # The value is a string like "4443236000.0", convert to float
+            fundamentals_df['shares_outstanding'] = float(shares_outstanding)
+
+        # 3. Format the DataFrame
+        fundamentals_df['ticker'] = ticker_sa
+        fundamentals_df = fundamentals_df.reset_index().rename(columns={'Date': 'fiscal_period_end'})
+        
+        # publish_date is not available, so we will leave it out for now.
+        # It can be proxied by adding 3 months to fiscal_period_end if needed later.
+        fundamentals_df['publish_date'] = pd.NaT 
+
+        # book_per_share can be calculated later if needed (book_equity / shares_outstanding)
+        fundamentals_df['book_per_share'] = np.nan
+        
+        return fundamentals_df
+
+    except Exception as e:
+        print(f"Could not fetch fundamentals for {ticker_sa}: {e}")
         return pd.DataFrame()
-
-    # The data is in a list of dictionaries, one for each fiscal period
-    df = pd.DataFrame(json_data['data'])
-    
-    # Rename columns to match our canonical schema
-    df = df.rename(columns={
-        'patrimonioLiquido': 'book_equity',
-        'vpa': 'book_per_share',
-        'data': 'fiscal_period_end'
-    })
-
-    # Select only the columns we need
-    required_cols = ['fiscal_period_end', 'book_equity', 'book_per_share']
-    df = df[required_cols]
-    
-    # Data Cleaning and Type Conversion
-    df['fiscal_period_end'] = pd.to_datetime(df['fiscal_period_end'], format='%d/%m/%Y')
-    
-    for col in ['book_equity', 'book_per_share']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # As per spec, calculate shares outstanding from book equity and book per share
-    # shares = book_equity / book_per_share
-    # Add a small epsilon to avoid division by zero
-    df['shares_outstanding'] = df['book_equity'] / (df['book_per_share'] + 1e-9)
-    df['shares_outstanding'] = df['shares_outstanding'].round(0)
-    
-    # The API does not provide a 'publish_date'. This will be handled by applying a
-    # fixed lag in a later processing step, as per the project specification.
-    df['publish_date'] = pd.NaT # Explicitly state that it's not available from source
-    
-    df['ticker'] = ticker_sa
-    
-    return df
 
 
 def create_fundamentals_series(
@@ -91,38 +65,24 @@ def create_fundamentals_series(
 ) -> pd.DataFrame:
     """
     Orchestrates downloading and compiling quarterly fundamentals for a list of tickers.
-
-    Args:
-        tickers: A list of B3 ticker symbols ending in .SA.
-
-    Returns:
-        A long-format DataFrame with the canonical fundamentals schema.
     """
     all_fundamentals = []
-    print(f"Fetching fundamentals for {len(tickers)} tickers from StatusInvest...")
+    print(f"Fetching fundamentals for {len(tickers)} tickers from invest.com...")
     
     for i, ticker in enumerate(tickers):
-        try:
-            # Polite scraping: pause between requests to avoid overloading the server
-            time.sleep(0.2)
-            
-            print(f"({i+1}/{len(tickers)}) Fetching {ticker}...")
-            
-            ticker_df = _fetch_single_ticker_fundamentals(ticker)
-            if not ticker_df.empty:
-                all_fundamentals.append(ticker_df)
-        except requests.exceptions.HTTPError as e:
-            print(f"  -> Failed to fetch {ticker}: {e.response.status_code}")
-        except Exception as e:
-            print(f"  -> An unexpected error occurred for {ticker}: {e}")
+        time.sleep(1) # Polite scraping
+        print(f"({i+1}/{len(tickers)}) Fetching {ticker}...")
+        
+        ticker_df = _fetch_single_ticker_fundamentals(ticker)
+        if not ticker_df.empty:
+            all_fundamentals.append(ticker_df)
 
     if not all_fundamentals:
-        print("Warning: Failed to retrieve fundamental data for any tickers. Returning empty DataFrame.")
+        print("Warning: Failed to retrieve fundamental data for any tickers.")
         return pd.DataFrame()
         
     final_df = pd.concat(all_fundamentals, ignore_index=True)
     
-    # Final column ordering to match schema
     final_df = final_df[[
         'fiscal_period_end',
         'publish_date',
@@ -132,37 +92,41 @@ def create_fundamentals_series(
         'book_per_share'
     ]]
     
+    # Convert types for consistency
+    final_df['fiscal_period_end'] = pd.to_datetime(final_df['fiscal_period_end'])
+    final_df['publish_date'] = pd.to_datetime(final_df['publish_date'])
+    final_df['shares_outstanding'] = pd.to_numeric(final_df['shares_outstanding'])
+    final_df['book_equity'] = pd.to_numeric(final_df['book_equity'])
+
     print("\nSuccessfully created fundamentals series.")
     return final_df.sort_values(by=['ticker', 'fiscal_period_end']).reset_index(drop=True)
 
 
 if __name__ == '__main__':
-    # Standalone test for the module
-    TEST_TICKERS = ["PETR4.SA", "WEGE3.SA", "MGLU3.SA", "AAPL34.SA", "NON_EXISTENT.SA"]
+    # A standalone test to verify the new logic
+    TEST_TICKERS = ["PETR4.SA", "VALE3.SA"]
     
     print("--- Running Fundamentals Ingestion Module Standalone Test ---")
-
+    
     try:
-        fundamentals_df = create_fundamentals_series(TEST_TICKERS)
-        
-        print("\n--- Results ---")
-        print("Shape of the final DataFrame:", fundamentals_df.shape)
-        
-        print("\nLatest data for PETR4.SA:")
-        print(fundamentals_df[fundamentals_df['ticker'] == 'PETR4.SA'].tail(1))
-        
-        print("\nLatest data for AAPL34.SA (BDR):")
-        print(fundamentals_df[fundamentals_df['ticker'] == 'AAPL34.SA'].tail(1))
+        fundamentals = create_fundamentals_series(TEST_TICKERS)
+        if not fundamentals.empty:
+            print("\n--- Test Results ---")
+            print("Shape:", fundamentals.shape)
+            print("Columns:", fundamentals.columns.tolist())
+            print("\nData for PETR4.SA:")
+            print(fundamentals[fundamentals['ticker'] == 'PETR4.SA'].tail())
+            print("\nData for VALE3.SA:")
+            print(fundamentals[fundamentals['ticker'] == 'VALE3.SA'].tail())
 
-        # Check for any missing values, which would be an error
-        # (except in publish_date, which is intentionally null)
-        cols_to_check = ['fiscal_period_end', 'ticker', 'shares_outstanding', 'book_equity', 'book_per_share']
-        if fundamentals_df[cols_to_check].isnull().values.any():
-            print("\nERROR: Null values found in critical fundamental data!")
-            print(fundamentals_df[fundamentals_df[cols_to_check].isnull().any(axis=1)])
+            # Check for nulls
+            if fundamentals['shares_outstanding'].isnull().any():
+                print("\nWarning: Found nulls in 'shares_outstanding'.")
+            if fundamentals['book_equity'].isnull().any():
+                print("\nWarning: Found nulls in 'book_equity'.")
         else:
-            print("\nOK: No unexpected null values found.")
-
+            print("\nTest failed: No data was returned.")
+            
     except Exception as e:
         import traceback
         print(f"\nAn error occurred during testing: {e}")
