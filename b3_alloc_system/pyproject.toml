@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "b3_alloc_system"
+version = "0.1.0"
+description = "Advanced Automated Portfolio Allocation System for the Brazilian (B3) Market"
+authors = [{ name = "Your Name", email = "your@email.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+# Core dependencies inferred from the project spec
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "yfinance>=0.2.30",
+    "requests>=2.30.0",
+    "arch>=5.3.0",          # For GARCH/DCC models
+    "statsmodels>=0.14.0",     # For VAR, OLS
+    "scikit-learn>=1.3.0",     # For Ledoit-Wolf, potential ML models
+    "cvxpy>=1.3.0",            # Primary optimizer
+    "osqp>=0.6.0",             # Solver for CVXPY
+    "holidays>=0.30"           # For B3 trading calendar
+]
+
+[project.optional-dependencies]
+# Dependencies for development, testing, and notebooks
+dev = [
+    "jupyterlab>=4.0.0",
+    "notebook>=7.0.0",
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+    "dask>=2023.9.0",
+    "joblib>=1.3.0"
+]
+# Dependencies for visualization and reporting
+reporting = [
+    "matplotlib>=3.7.0",
+    "plotly>=5.15.0",
+    "bokeh>=3.2.0",
+    "nbconvert>=7.8.0",
+    "openpyxl>=3.1.0",         # For Excel DARF report
+    "python-docx>=1.1.0"       # For PDF/Docx DARF report
+]
+# All optional dependencies
+all = [
+    "b3_alloc_system[dev]",
+    "b3_alloc_system[reporting]"
+]
+
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/b3_alloc_system"
+"Bug Tracker" = "https://github.com/yourusername/b3_alloc_system/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
