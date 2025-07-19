@@ -1,19 +1,20 @@
 import cvxpy as cp
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional
+from ..config import OptimizerConfig
 
 def build_optimizer_constraints(
     w_variable: cp.Variable,
-    config: Dict, # Expects the 'optimizer' section of the config
+    config: OptimizerConfig,
     asset_universe: List[str],
-    sector_map: Dict[str, str] = None
+    sector_map: Optional[Dict[str, str]] = None
 ) -> List[cp.constraints.constraint.Constraint]:
     """
     Builds a list of cvxpy constraints based on the provided configuration.
 
     Args:
         w_variable: The cvxpy Variable representing the portfolio weights.
-        config: The optimizer configuration dictionary.
+        config: The OptimizerConfig Pydantic model.
         asset_universe: The list of assets in the order they appear in w_variable.
         sector_map: A dictionary mapping tickers to their sectors, required for
                     sector constraints.
@@ -22,27 +23,21 @@ def build_optimizer_constraints(
         A list of cvxpy constraint objects.
     """
     constraints = []
-    n_assets = len(asset_universe)
-
+    
     # --- Core Constraints ---
-    # Budget constraint: weights must sum to 1
     constraints.append(cp.sum(w_variable) == 1)
     
-    # Long-only constraint
-    if config.get('long_only', True):
+    if config.long_only:
         constraints.append(w_variable >= 0)
         
     # --- Weight Cap Constraints ---
-    # Single name cap
-    if 'name_cap' in config:
-        constraints.append(w_variable <= config['name_cap'])
+    if config.name_cap is not None:
+        constraints.append(w_variable <= config.name_cap)
     
-    # Sector cap
-    if 'sector_cap' in config:
+    if config.sector_cap is not None:
         if not sector_map:
             raise ValueError("A sector_map is required for sector cap constraints.")
             
-        # Group assets by sector
         sectors = {}
         for i, ticker in enumerate(asset_universe):
             sector = sector_map.get(ticker, 'Unknown')
@@ -50,10 +45,9 @@ def build_optimizer_constraints(
                 sectors[sector] = []
             sectors[sector].append(w_variable[i])
             
-        # Add a sum constraint for each sector
         for sector, weights_in_sector in sectors.items():
             if sector != 'Unknown':
-                constraints.append(cp.sum(weights_in_sector) <= config['sector_cap'])
+                constraints.append(cp.sum(weights_in_sector) <= config.sector_cap)
 
     print(f"Built {len(constraints)} constraints for the optimizer.")
     return constraints
@@ -70,11 +64,14 @@ if __name__ == '__main__':
         'ITUB4.SA': 'Financials',
         'BBDC4.SA': 'Financials'
     }
-    test_config = {
-        'long_only': True,
-        'name_cap': 0.10,
-        'sector_cap': 0.15
-    }
+    # Use the Pydantic model for config
+    test_config = OptimizerConfig(
+        objective='max_sharpe', # Objective is not used here, but required by model
+        long_only=True,
+        name_cap=0.10,
+        sector_cap=0.15,
+        turnover_penalty_bps=0
+    )
     w = cp.Variable(len(test_universe))
     
     # --- WHEN ---
@@ -85,17 +82,13 @@ if __name__ == '__main__':
         print(f"\nGenerated {len(constraints_list)} constraint objects.")
         
         # Validation
-        # Expected constraints: sum=1, w>=0, w<=0.10, sum(financials)<=0.15, sum(materials)<=0.15, sum(energy)<=0.15
-        # Total = 1 + 1 + 1 + 3 = 6
         assert len(constraints_list) == 6, "Incorrect number of constraints generated."
         
         print("\nOK: Correct number of constraints created.")
         
-        # Check the structure of one constraint
-        sector_constraint = str(constraints_list[-1])
-        # Example output: 'sum(varX[0]) <= 0.15'
-        assert '<=' in sector_constraint
-        assert str(test_config['sector_cap']) in sector_constraint
+        sector_constraint_str = str(constraints_list[-1])
+        assert '<=' in sector_constraint_str
+        assert str(test_config.sector_cap) in sector_constraint_str
         print("OK: Sector constraint appears to be correctly formulated.")
         
     except Exception as e:

@@ -8,6 +8,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from b3alloc.factors.fama_french_b3 import build_fama_french_factors
 from b3alloc.preprocess.align import align_fundamentals_to_prices
 from b3alloc.preprocess.returns import compute_returns
+from b3alloc.config import load_config
 
 def main():
     """
@@ -17,6 +18,16 @@ def main():
     
     project_root = Path(__file__).resolve().parents[1]
     data_path = project_root / "data" / "processed"
+
+    # Load config to get the publication lag
+    try:
+        config_path = project_root / 'config' / 'portfolio_A.yaml'
+        cfg = load_config(config_path)
+        publish_lag = cfg.data.publish_lag_days
+        print(f"Using publication lag of {publish_lag} days from config.")
+    except (FileNotFoundError, AttributeError):
+        print("Warning: Could not load config. Falling back to default lag of 65 days.")
+        publish_lag = 65
     
     if not data_path.exists():
         print(f"ERROR: Processed data directory not found at {data_path}")
@@ -47,7 +58,7 @@ def main():
     daily_fundamentals = align_fundamentals_to_prices(
         fundamentals_df=fundamentals_df,
         price_dates=prices_wide.index,
-        publish_lag_days=65 
+        publish_lag_days=publish_lag 
     )
     
     # We need simple returns

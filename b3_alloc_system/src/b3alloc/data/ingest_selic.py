@@ -1,11 +1,9 @@
 import pandas as pd
 import requests
-from io import StringIO
 from typing import Dict, Any
 
 # Assuming this script is run from a context where 'b3alloc' is in the python path
-from ..utils_dates import get_b3_trading_calendar, B3_HOLIDAYS_PROVIDER
-from ..config import Config
+from ..utils_dates import get_b3_trading_calendar
 
 # The specification refers to BCB SGS series 11 for SELIC.
 # API documentation: https://dadosabertos.bcb.gov.br/dataset/11-taxa-de-juros---selic/resource/71bcb420-5503-4a72-b651-70a273574b41
@@ -74,12 +72,12 @@ def create_risk_free_series(
     raw_selic_df = fetch_selic_from_bcb(series_id, start_ts, end_ts)
 
     # 2. Basic processing
-    # The 'valor' is the daily rate as a percentage. Convert to decimal.
+    # The 'valor' is the annual rate as a percentage. Convert to decimal.
     raw_selic_df["date"] = pd.to_datetime(raw_selic_df["data"], format="%d/%m/%Y")
-    raw_selic_df["rf_daily"] = pd.to_numeric(raw_selic_df["valor"], errors="coerce") / 100.0
+    raw_selic_df["selic_annualized"] = pd.to_numeric(raw_selic_df["valor"], errors="coerce") / 100.0
     
     # Set date as index for alignment
-    raw_selic_df = raw_selic_df.set_index("date")[["rf_daily"]]
+    raw_selic_df = raw_selic_df.set_index("date")[["selic_annualized"]]
     raw_selic_df = raw_selic_df.sort_index()
     
     # 3. Get the canonical trading calendar
@@ -87,15 +85,15 @@ def create_risk_free_series(
 
     # 4. Align SELIC data to the trading calendar
     # Reindex with the trading calendar and forward-fill missing values
-    # (e.g., SELIC rate from Friday applies to the following Monday if no change)
     aligned_rf = raw_selic_df.reindex(b3_calendar, method="ffill")
     
     # Drop any initial NaNs if the backtest starts before the SELIC data
     aligned_rf = aligned_rf.dropna()
 
-    # 5. Calculate annualized rate for diagnostics and reporting
-    aligned_rf["selic_annualized"] = (
-        (1 + aligned_rf["rf_daily"]) ** TRADING_DAYS_PER_YEAR
+    # 5. Convert annualized rate to daily rate for modeling
+    # Formula: daily_rate = (1 + annual_rate)^(1/252) - 1
+    aligned_rf["rf_daily"] = (
+        (1 + aligned_rf["selic_annualized"]) ** (1 / TRADING_DAYS_PER_YEAR)
     ) - 1
     
     aligned_rf.index.name = "date"
@@ -106,8 +104,6 @@ def create_risk_free_series(
 
 if __name__ == "__main__":
     # Example of how to run this module directly for testing
-    # This requires a dummy config or hardcoded dates
-    
     TEST_START_DATE = "2022-01-01"
     TEST_END_DATE = "2022-12-31"
     
@@ -127,9 +123,16 @@ if __name__ == "__main__":
         print("\nLast 5 rows:")
         print(risk_free_df.tail())
         
-        print("\nBasic Stats:")
-        print(risk_free_df.describe())
+        # Validation
+        # Check if the conversion from annual to daily is correct for one entry
+        last_entry = risk_free_df.iloc[-1]
+        annual_rate = last_entry['selic_annualized']
+        daily_rate = last_entry['rf_daily']
+        expected_daily_rate = (1 + annual_rate)**(1/TRADING_DAYS_PER_YEAR) - 1
         
+        assert abs(daily_rate - expected_daily_rate) < 1e-9, "Daily rate calculation is incorrect."
+        print("\nOK: Daily rate calculation is validated.")
+
         # Check for any missing values, which would be an error
         if risk_free_df.isnull().values.any():
             print("\nERROR: Missing values found in the final series!")
@@ -137,4 +140,6 @@ if __name__ == "__main__":
             print("\nOK: No missing values found in the final series.")
 
     except Exception as e:
+        import traceback
         print(f"\nAn error occurred during testing: {e}")
+        traceback.print_exc()

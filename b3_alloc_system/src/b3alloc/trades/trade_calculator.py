@@ -84,7 +84,8 @@ def compute_trade_list(
         A DataFrame with columns ['ticker', 'current_shares', 'target_shares',
         'delta_shares', 'action'], detailing the required trades.
     """
-    # Combine current and target holdings into a single DataFrame
+    # Combine current and target holdings into a single DataFrame using an outer join
+    # to ensure all tickers from both series are included.
     trade_df = pd.DataFrame({'current': current_shares, 'target': target_shares})
     trade_df = trade_df.fillna(0) # Assume 0 shares for any missing tickers
     
@@ -149,3 +150,11 @@ if __name__ == '__main__':
     assert np.isclose(expected_petr4_value, actual_petr4_value)
     
     print("\nOK: Trade list calculation is correct and intuitive.")
+
+    # --- Test Edge Case: Empty Current Portfolio ---
+    print("\n--- Testing with empty current portfolio ---")
+    empty_portfolio = pd.Series(dtype=int)
+    trade_list_empty = compute_trade_list(empty_portfolio, target_shares_series)
+    assert len(trade_list_empty) == len(target_shares_series), "Should generate BUY orders for all target assets."
+    assert (trade_list_empty['action'] == 'BUY').all(), "All actions should be BUY."
+    print("OK: Correctly handles an empty initial portfolio.")

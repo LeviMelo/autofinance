@@ -3,8 +3,11 @@ import holidays
 from functools import lru_cache
 
 # Using ANBIMA rules from the 'holidays' library as a robust proxy for B3 financial market holidays.
-B3_HOLIDAYS_PROVIDER = holidays.Brazil(state="SP", observance_rule=holidays.ANBIMA)
-
+# Caching the holiday generation per year is a significant performance boost.
+@lru_cache(maxsize=16)
+def _get_b3_holidays_for_year(year: int) -> holidays.HolidayBase:
+    """Memoized helper to get all B3 holidays for a single year."""
+    return holidays.Brazil(years=year, state="SP")
 
 @lru_cache(maxsize=16)
 def get_b3_trading_calendar(
@@ -27,12 +30,12 @@ def get_b3_trading_calendar(
     # Generate business days (Mon-Fri) and then remove specific holidays.
     business_days = pd.date_range(start=start_date, end=end_date, freq="B")
 
-    # The holidays library is faster when a year range is provided.
-    years = range(business_days.year.min(), business_days.year.max() + 1)
-    b3_holidays_in_range = holidays.Brazil(
-        years=years, state="SP", observance_rule=holidays.ANBIMA
-    )
-    holiday_dates = pd.to_datetime(list(b3_holidays_in_range.keys()))
+    # Collect all holidays across the required year range using the cached helper
+    all_holidays = set()
+    for year in range(start_date.year, end_date.year + 1):
+        all_holidays.update(_get_b3_holidays_for_year(year).keys())
+    
+    holiday_dates = pd.to_datetime(list(all_holidays))
 
     trading_calendar = business_days[~business_days.isin(holiday_dates)]
     

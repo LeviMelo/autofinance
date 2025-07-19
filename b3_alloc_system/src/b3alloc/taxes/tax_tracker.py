@@ -99,6 +99,7 @@ def calculate_monthly_taxes(
 
 if __name__ == '__main__':
     from .ledger import TaxLedger
+    import numpy as np
     print("--- Running Tax Tracker Module Standalone Test ---")
     
     # --- GIVEN ---

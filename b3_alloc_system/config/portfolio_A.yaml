@@ -1,0 +1,57 @@
+meta:
+  portfolio_name: "Conservative Portfolio"
+  base_currency: "BRL"
+data:
+  start: "2015-01-01"
+  end: "2023-12-31"
+  tickers_file: "config/universe_conservative.csv"
+  selic_series: 11
+  publish_lag_days: 45
+universe:
+  include_fx_factor: true
+  fx_series_id: 1
+  asset_flags:
+    "AAPL34.SA": { "fx_sensitive": true }
+risk_engine:
+  garch:
+    dist: "gaussian"
+    min_obs: 253
+    refit_freq_days: 63
+  dcc:
+    a_init: 0.05
+    b_init: 0.94
+  shrinkage:
+    method: "ledoit_wolf_constant_corr"
+    floor: 0.01
+return_engine:
+  factor:
+    lookback_days: 756
+    include_alpha: false
+    premium_estimator: "long_term_mean"
+  var:
+    max_lag: 5
+    criterion: "bic"
+    log_returns: true
+black_litterman:
+  tau: 0.025
+  confidence:
+    method: "rmse_based"
+    factor_scaler: 1.0
+    var_scaler: 1.5
+  qualitative_views_file: "config/views/qualitative_views_A.yaml"
+optimizer:
+  objective: "max_sharpe"
+  long_only: true
+  name_cap: 0.15
+  sector_cap: 0.30
+  turnover_penalty_bps: 2
+tax:
+  enable: true
+  brokerage_fee_bps: 5
+backtest:
+  lookback_years: 3
+  rebalance: "monthly"
+  start: "2018-01-01"
+  end: "2023-12-31"
+  costs_bps: 10
+  initial_capital: 1000000.0 

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from typing import Tuple, Optional
 from arch import arch_model
-from arch.univariate import GARCH, StudentsT, Normal, ConvergenceError
+from arch.univariate import GARCH, StudentsT, Normal
 
 # Define type hints for clarity
 FitResult = any # The specific type is complex, 'any' is sufficient here
@@ -55,7 +55,7 @@ def fit_garch_model(
             # print(f"Warning: GARCH for {returns_series.name} did not converge. Status: {fit_result.convergence_flag}")
             return None, None
             
-    except (ConvergenceError, ValueError) as e:
+    except Exception as e:
         # print(f"Warning: GARCH for {returns_series.name} failed to fit. Error: {e}")
         return None, None
 
@@ -107,9 +107,9 @@ if __name__ == '__main__':
         
         # Check if estimated params are reasonable
         est_alpha = garch_fit.params['alpha[1]']
-        est_beta = g.params['beta[1]']
-        assert abs(est_alpha - alpha) < 0.05, "Alpha estimate is too far from true value."
-        assert abs(est_beta - beta) < 0.05, "Beta estimate is too far from true value."
+        est_beta = garch_fit.params['beta[1]']
+        assert abs(est_alpha - alpha) < 0.05, f"Alpha estimate {est_alpha} is too far from true value {alpha}."
+        assert abs(est_beta - beta) < 0.05, f"Beta estimate {est_beta} is too far from true value {beta}."
         print("\nOK: Estimated parameters are close to true simulation parameters.")
 
     except Exception as e:

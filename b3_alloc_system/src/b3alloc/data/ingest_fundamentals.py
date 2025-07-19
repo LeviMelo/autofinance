@@ -15,23 +15,21 @@ BASE_URL = "https://statusinvest.com.br"
 
 def _clean_ticker_and_get_type(ticker_sa: str) -> Tuple[str, str]:
     """
-    Cleans a '.SA' ticker and determines its type (stock or bdr) for the API endpoint.
-    
-    Example:
-    'PETR4.SA' -> ('petr4', 'acao')
-    'AAPL34.SA' -> ('aapl34', 'bdr')
+    Cleans a '.SA' ticker and determines its type for the StatusInvest API endpoint.
     """
-    # Remove .SA suffix and convert to lowercase
     cleaned = ticker_sa.split('.')[0].lower()
-    
-    # Use regex to find the number in the ticker
     match = re.search(r'(\d+)$', cleaned)
+    
     if match:
         num = int(match.group(1))
-        # BDRs typically end in 31, 32, 33, 34, 35, 39
-        if num >= 31 and num <= 39:
+        # BDRs typically end in 34, 35, or 39. This is a heuristic.
+        if num in [34, 35, 39]:
             return cleaned, 'bdr'
+        # ETFs often end in 11.
+        if num == 11:
+            return cleaned, 'etf'
             
+    # Default to stock ('acao')
     return cleaned, 'acao'
 
 
@@ -43,7 +41,7 @@ def _fetch_single_ticker_fundamentals(ticker_sa: str) -> pd.DataFrame:
     
     # Construct the correct API endpoint based on asset type
     # This corresponds to the XHR request made by the website's frontend.
-    api_url = f"{BASE_URL}/{asset_type}/getbs?companyName={cleaned_ticker}&type=1"
+    api_url = f"{BASE_URL}/{asset_type}/getbs?companyName={cleaned_ticker}&type=0"
     
     response = requests.get(api_url, headers=HEADERS)
     response.raise_for_status()
@@ -119,7 +117,8 @@ def create_fundamentals_series(
             print(f"  -> An unexpected error occurred for {ticker}: {e}")
 
     if not all_fundamentals:
-        raise ValueError("Failed to retrieve fundamental data for all tickers.")
+        print("Warning: Failed to retrieve fundamental data for any tickers. Returning empty DataFrame.")
+        return pd.DataFrame()
         
     final_df = pd.concat(all_fundamentals, ignore_index=True)
     

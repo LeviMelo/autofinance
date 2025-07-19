@@ -88,10 +88,18 @@ def build_covariance_matrix(
     H_t_df = pd.DataFrame(H_t, index=successful_series, columns=successful_series)
 
     # --- 6. Ledoit-Wolf Shrinkage Integration ---
-    print("Applying Ledoit-Wolf shrinkage to stabilize the matrix...")
-    F_t, delta = apply_ledoit_wolf_shrinkage(model_input_returns[successful_series])
-    final_shrunk_cov_full = (1 - delta) * H_t_df.values + delta * F_t
-    final_shrunk_cov_full_df = pd.DataFrame(final_shrunk_cov_full, index=successful_series, columns=successful_series)
+    print("Applying Ledoit-Wolf shrinkage to stabilize the GARCH-DCC matrix...")
+    # We shrink the GARCH-DCC forecast (H_t) towards a stable target,
+    # using the historical returns to estimate the optimal shrinkage intensity (delta).
+    shrunk_cov_matrix, shrinkage_delta = apply_ledoit_wolf_shrinkage(
+        sample_cov=H_t_df.values,
+        returns_array=model_input_returns[successful_series].values
+    )
+    final_shrunk_cov_full_df = pd.DataFrame(
+        shrunk_cov_matrix, 
+        index=successful_series, 
+        columns=successful_series
+    )
     
     # --- 7. Finalize and Drop FX Factor ---
     # As per spec, drop the FX factor row/col from the final matrix
@@ -106,7 +114,7 @@ def build_covariance_matrix(
     diagnostics = {
         'num_series_in': model_input_returns.shape[1],
         'num_assets_out': final_asset_cov_df.shape[1],
-        'shrinkage_intensity_delta': delta,
+        'shrinkage_intensity_delta': shrinkage_delta,
         'full_covariance_matrix_with_fx': final_shrunk_cov_full_df # Store for attribution
     }
     

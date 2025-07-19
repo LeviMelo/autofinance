@@ -74,21 +74,37 @@ def plot_drawdowns(strategy_returns: pd.Series) -> Figure:
     
     return fig
 
-def plot_weights_evolution(weights_df: pd.DataFrame) -> Figure:
+def plot_weights_evolution(weights_df: pd.DataFrame, top_n: int = 10) -> Figure:
     """
     Plots the evolution of asset weights over time as a stacked area chart.
+
+    To keep the legend readable, only the top N assets by average weight are
+    shown explicitly. The rest are aggregated into an 'Others' category.
 
     Args:
         weights_df: A DataFrame where the index is the date and columns are
                     tickers, containing portfolio weights at each rebalance.
+        top_n: The number of top assets to display in the legend.
 
     Returns:
         A matplotlib Figure object containing the plot.
     """
     fig, ax = plt.subplots(figsize=(12, 7))
     
+    # Identify top N assets by average weight
+    avg_weights = weights_df.mean().sort_values(ascending=False)
+    top_assets = avg_weights.head(top_n).index.tolist()
+    
+    # Aggregate other assets
+    if len(avg_weights) > top_n:
+        other_assets = avg_weights.tail(len(avg_weights) - top_n).index.tolist()
+        weights_df['Others'] = weights_df[other_assets].sum(axis=1)
+        plot_df = weights_df[top_assets + ['Others']]
+    else:
+        plot_df = weights_df
+
     # Use pandas' built-in plotting for a stacked area chart
-    weights_df.plot.area(ax=ax, stacked=True, lw=0)
+    plot_df.plot.area(ax=ax, stacked=True, lw=0)
     
     ax.set_title('Portfolio Weights Evolution', fontsize=16)
     ax.set_ylabel('Portfolio Weight', fontsize=12)
@@ -119,8 +135,8 @@ if __name__ == '__main__':
         0.8 * bench_ret + np.random.randn(periods) * 0.03 + 0.004, index=dates
     )
     
-    # Create a dummy weights dataframe
-    tickers = ['Asset A', 'Asset B', 'Asset C', 'Asset D']
+    # Create a dummy weights dataframe with many assets
+    tickers = [f'Asset {i}' for i in range(20)]
     weights = np.random.rand(len(dates), len(tickers))
     weights = weights / weights.sum(axis=1, keepdims=True)
     weights_df = pd.DataFrame(weights, index=dates, columns=tickers)
@@ -138,8 +154,11 @@ if __name__ == '__main__':
         fig2.suptitle("Test: Drawdowns", y=1.02)
 
         # 3. Test Weights Evolution Plot
-        fig3 = plot_weights_evolution(weights_df)
-        fig3.suptitle("Test: Weights Evolution", y=1.02)
+        fig3 = plot_weights_evolution(weights_df, top_n=8)
+        fig3.suptitle("Test: Weights Evolution (Top 8 + Others)", y=1.02)
+        
+        # Validation for weights plot
+        assert len(fig3.axes[0].get_legend().get_texts()) == 9 # 8 assets + Others
         
         print("\nOK: All plot functions executed without error.")
         print("Displaying generated plots...")

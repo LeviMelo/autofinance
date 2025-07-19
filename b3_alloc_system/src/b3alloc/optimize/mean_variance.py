@@ -7,7 +7,8 @@ def run_mean_variance_optimization(
     mu: pd.Series,
     sigma: pd.DataFrame,
     risk_aversion: float,
-    constraints: List[cp.constraints.constraint.Constraint]
+    constraints: List[cp.constraints.constraint.Constraint],
+    solver: str = 'OSQP'
 ) -> Optional[pd.Series]:
     """
     Solves the mean-variance optimization problem for a given risk aversion.
@@ -52,7 +53,7 @@ def run_mean_variance_optimization(
     try:
         # OSQP is a good, fast solver for QPs. ECOS is another option.
         # It's important to handle cases where the problem is infeasible or unbounded.
-        problem.solve(solver=cp.OSQP, verbose=False)
+        problem.solve(solver=solver, verbose=False)
 
         if problem.status not in ["optimal", "optimal_inaccurate"]:
             print(f"Warning: Optimizer failed or found a non-optimal solution. Status: {problem.status}")
@@ -110,7 +111,9 @@ if __name__ == '__main__':
 
     try:
         # --- WHEN ---
-        optimal_w = run_mean_variance_optimization(mu_test, sigma_test, gamma, constraints_test)
+        optimal_w = run_mean_variance_optimization(
+            mu_test, sigma_test, gamma, constraints_test, solver='OSQP'
+        )
         
         # --- THEN ---
         assert optimal_w is not None, "Optimization failed on a simple, valid problem."

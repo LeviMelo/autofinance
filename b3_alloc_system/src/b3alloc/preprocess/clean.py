@@ -51,13 +51,13 @@ def get_liquid_universe(
 
     Args:
         prices_df: A wide-format DataFrame of daily prices (tickers as columns).
-        volume_df: A wide-format DataFrame of daily volumes.
+        volume_df: A wide-format DataFrame of daily volumes (in number of shares).
         rebalance_date: The date on which the universe is being screened.
         lookback_days: The number of trading days to look back for evaluation.
         min_trading_ratio: The minimum fraction of days an asset must have a
                            valid price in the lookback window.
-        min_avg_volume: The minimum average daily trading volume (in BRL, assuming
-                        price * volume).
+        min_avg_volume: The minimum average daily traded financial volume in BRL.
+                        Calculated as the average of (daily_price * daily_volume).
 
     Returns:
         A list of ticker symbols that are eligible for inclusion in the model.
@@ -166,7 +166,7 @@ if __name__ == '__main__':
         print(f"\nEligible assets on {rebalance_date.date()}: {liquid_assets}")
         
         # Validation
-        # LIQUID_A: Should pass (105 * 200k > 1M)
+        # LIQUID_A: Should pass (avg value is well > 1M BRL)
         # ILLIQUID_B: Should fail (too many NaNs)
         # LOWVOL_C: Should fail (avg value ~21*10k = 210k < 1M)
         # OUTLIER_D: Should pass (avg value ~31*180k > 1M)

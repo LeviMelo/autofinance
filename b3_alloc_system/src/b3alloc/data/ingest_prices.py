@@ -41,6 +41,7 @@ def fetch_yfinance_data(
         auto_adjust=False,  # We want both Close and Adj Close for audit purposes
         actions=True,       # Fetch dividends and stock splits
         progress=True,
+        interval="1d"
     )
 
     if data.empty:
@@ -50,32 +51,44 @@ def fetch_yfinance_data(
     index_data = data.loc[:, (slice(None), index_ticker)].copy()
     index_data.columns = index_data.columns.droplevel(1) # Remove ticker level from columns
 
-    price_data = data.drop(index_ticker, axis=1, level=1)
+    price_data = data
+    if index_ticker in tickers:
+        price_data = data.drop(index_ticker, axis=1, level=1)
     
     # Separate prices from actions
     price_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
     actions_cols = ['Dividends', 'Stock Splits']
     
-    prices = price_data.loc[:, (slice(None), price_cols)]
-    actions_raw = price_data.loc[:, (slice(None), actions_cols)]
-    
+    # Use a dictionary comprehension for a cleaner extraction
+    prices = {
+        col: price_data.loc[:, (col, tickers)]
+        for col in price_cols if (col, tickers[0]) in price_data.columns
+    }
+    actions_raw = {
+        col: price_data.loc[:, (col, tickers)]
+        for col in actions_cols if (col, tickers[0]) in price_data.columns
+    }
+
     # Reformat actions into a more usable dictionary
     actions_dict = {}
-    for ticker in tickers:
-        # Filter for non-zero actions for this ticker
-        # The column access can be tricky, ensure it's robust
-        if ('Dividends', ticker) in actions_raw.columns:
-            ticker_actions = actions_raw.loc[:, (actions_cols, ticker)]
-            ticker_actions.columns = ticker_actions.columns.droplevel(1) # Drop ticker level
+    if actions_raw:
+        for ticker in tickers:
+            ticker_actions = pd.concat([df[ticker] for df in actions_raw.values()], axis=1)
+            ticker_actions.columns = actions_cols
             ticker_actions = ticker_actions[ticker_actions.sum(axis=1) != 0]
             if not ticker_actions.empty:
                 actions_dict[ticker] = ticker_actions
 
-    # For multi-level columns, yfinance might return ('Adj Close', 'Ticker'). We want ('Ticker', 'Adj Close')
-    prices.columns = prices.columns.swaplevel(0, 1)
-    prices = prices.sort_index(axis=1)
+    # The price data is now in a dict of DataFrames, which is harder to work with.
+    # Let's pivot it back to the multi-level column format.
+    # This section is overly complex and can be simplified. The original was better.
+    # Reverting to a simpler multi-level column access.
+    prices_df = price_data.loc[:, pd.IndexSlice[:, tickers]].copy()
+    prices_df.columns = prices_df.columns.swaplevel(0, 1)
+    prices_df = prices_df.sort_index(axis=1)
 
-    return {"prices": prices, "index": index_data, "actions": actions_dict}
+
+    return {"prices": prices_df, "index": index_data, "actions": actions_dict}
 
 
 def create_equity_price_series(
@@ -103,12 +116,12 @@ def create_equity_price_series(
     data_bundle = fetch_yfinance_data(tickers, buffered_start, end_date)
     prices_wide = data_bundle['prices']
 
-    # We only need Adj Close and Volume for the primary table
-    adj_close = prices_wide.loc[:, (slice(None), 'Adj Close')]
-    adj_close.columns = adj_close.columns.droplevel(0)
+    # This can be simplified by directly accessing the multi-level columns
+    adj_close = prices_wide.loc[:, pd.IndexSlice[:, 'Adj Close']]
+    adj_close.columns = adj_close.columns.droplevel(1)
 
-    volume = prices_wide.loc[:, (slice(None), 'Volume')]
-    volume.columns = volume.columns.droplevel(0)
+    volume = prices_wide.loc[:, pd.IndexSlice[:, 'Volume']]
+    volume.columns = volume.columns.droplevel(1)
 
     # Align to the official B3 calendar, forward-filling gaps
     adj_close_aligned = adj_close.reindex(b3_calendar).ffill()

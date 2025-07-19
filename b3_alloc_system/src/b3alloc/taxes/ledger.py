@@ -1,5 +1,6 @@
 import pandas as pd
 from typing import List, Dict, Tuple
+import numpy as np
 
 class TaxLedger:
     """
@@ -149,3 +150,12 @@ if __name__ == '__main__':
     assert petr4_lot2['shares_remaining'] == 150
     
     print("\nOK: Ledger correctly applied FIFO logic and updated lot shares.")
+
+    # --- Test Edge Case: Selling more shares than available ---
+    print("\n--- Testing selling more shares than available ---")
+    gain2 = ledger.record_sell(ticker='VALE3.SA', shares_to_sell=100, sale_price=80.0, date=pd.to_datetime('2023-03-05'))
+    # Expected: Should sell the 50 available shares and log the gain for that amount.
+    expected_gain2 = (50 * 80.0) - (50 * 70.0) # (Sale Value) - (Cost Basis)
+    assert np.isclose(gain2, expected_gain2), "Gain calculation for partial sell-off is incorrect."
+    assert ledger.get_current_holdings().get('VALE3.SA', 0) == 0, "All shares of VALE3.SA should have been sold."
+    print("OK: Ledger correctly handled attempt to sell more shares than owned.")

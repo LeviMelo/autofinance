@@ -1,5 +1,6 @@
 import pandas as pd
 import requests
+import numpy as np
 
 from ..utils_dates import get_b3_trading_calendar
 
@@ -75,9 +76,9 @@ def create_fx_series(
     
     # 5. Calculate daily log returns for use as a risk factor
     log_return_col = f"{fx_pair}_log_return"
-    aligned_fx[log_return_col] = aligned_fx[fx_pair].pct_change().apply(
-        lambda x: pd.np.log(1 + x)
-    )
+    # A more direct and efficient way to calculate log returns
+    aligned_fx[log_return_col] = np.log(aligned_fx[fx_pair] / aligned_fx[fx_pair].shift(1))
+    
     aligned_fx = aligned_fx.dropna() # First row will be NaN
     
     print(f"Successfully created FX series with {len(aligned_fx)} trading days.")
@@ -111,24 +112,13 @@ if __name__ == "__main__":
             print("\nOK: No missing values found.")
             
         # Validate return calculation
-        first_ret = fx_df['USD_BRL_log_return'].iloc[0]
         price_t1 = fx_df['USD_BRL'].iloc[1]
         price_t0 = fx_df['USD_BRL'].iloc[0]
-        expected_ret = pd.np.log(price_t1 / price_t0)
+        expected_ret = np.log(price_t1 / price_t0)
         
-        # Note: there is a discrepancy in the first return calculation due to pct_change()
-        # and then taking the log, this is a known issue.
-        # Let's check the second return for a more stable comparison.
-        second_ret = fx_df['USD_BRL_log_return'].iloc[1]
-        price_t2 = fx_df['USD_BRL'].iloc[2]
-        expected_second_ret = pd.np.log(price_t2 / price_t1)
+        actual_ret = fx_df['USD_BRL_log_return'].iloc[0]
         
-        # This will fail due to the way pct_change() is calculated internally.
-        # A more direct calculation is needed for precision. Let's fix that.
-        # Direct calculation:
-        log_returns_direct = pd.np.log(fx_df['USD_BRL'] / fx_df['USD_BRL'].shift(1))
-        
-        assert pd.np.allclose(fx_df['USD_BRL_log_return'].iloc[1:], log_returns_direct.iloc[1:], atol=1e-9)
+        assert np.isclose(expected_ret, actual_ret)
         print("\nOK: Log return calculation is validated.")
         
     except Exception as e:

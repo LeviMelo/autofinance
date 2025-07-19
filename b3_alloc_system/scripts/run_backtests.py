@@ -7,6 +7,7 @@ from datetime import datetime
 import sys
 import numpy as np
 import cvxpy as cp
+from typing import Dict
 
 # --- System Path Setup ---
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -36,36 +37,45 @@ def _prepare_data_stores(data_path: Path) -> Dict[str, pd.DataFrame]:
     """Loads all necessary data from processed files into a dictionary."""
     print("Loading all processed data stores...")
     stores = {}
-    required_files = [
-        "prices_equity_daily.parquet", "risk_free_daily.parquet",
-        "index_ibov_daily.parquet", "factor_panel_daily.parquet",
-        "fx_usd_brl_daily.parquet", "fundamentals_quarterly.parquet"
-    ]
-    for f in required_files:
+    
+    # Dynamically find all parquet files in the processed data directory
+    required_files = list(data_path.glob("*.parquet"))
+    if not required_files:
+        raise FileNotFoundError(f"No .parquet files found in {data_path}. Please run data ingestion scripts.")
+
+    for f_path in required_files:
         try:
-            key = f.replace(".parquet", "")
-            stores[key] = pd.read_parquet(data_path / f)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Missing required data file: {f}. Please run update_data.py and build_factors.py.")
+            key = f_path.stem # Use the filename without extension as the key
+            stores[key] = pd.read_parquet(f_path)
+        except Exception as e:
+            print(f"Warning: Could not load or process {f_path.name}. Error: {e}")
 
     # Pre-calculate useful wide-format dataframes
-    prices_long = stores['prices_equity_daily']
-    stores['prices_wide'] = prices_long.pivot(index='date', columns='ticker', values='adj_close')
-    stores['volume_wide'] = prices_long.pivot(index='date', columns='ticker', values='volume')
+    if 'prices_equity_daily' in stores:
+        prices_long = stores['prices_equity_daily']
+        stores['prices_wide'] = prices_long.pivot(index='date', columns='ticker', values='adj_close')
+        stores['volume_wide'] = prices_long.pivot(index='date', columns='ticker', values='volume')
+        
+        # Pre-calculate market caps if fundamentals are also available
+        if 'fundamentals_quarterly' in stores and 'shares_outstanding' in prices_long.columns:
+            # This is a simplified approach. A full alignment would be needed for point-in-time caps.
+            # For the purpose of data store prep, this is a reasonable pre-calculation.
+            shares_wide = prices_long.pivot(index='date', columns='ticker', values='shares_outstanding').ffill()
+            stores['market_caps'] = (stores['prices_wide'] * shares_wide).dropna(how='all')
     
     # Calculate simple returns for performance attribution
-    rf_series = stores['risk_free_daily']['rf_daily']
-    stores['simple_returns'] = stores['prices_wide'].pct_change()
-    stores['market_simple_returns'] = stores['index_ibov_daily']['adj_close'].pct_change()
-    stores['market_excess_returns'] = (stores['market_simple_returns'] - rf_series).dropna()
+    if 'prices_wide' in stores and 'risk_free_daily' in stores:
+        rf_series = stores['risk_free_daily']['rf_daily']
+        stores['simple_returns'] = stores['prices_wide'].pct_change()
+        
+        if 'index_ibov_daily' in stores:
+            stores['market_simple_returns'] = stores['index_ibov_daily']['adj_close'].pct_change()
+            stores['market_excess_returns'] = (stores['market_simple_returns'] - rf_series).dropna()
 
     # Pre-calculate log returns for model inputs
-    stores['log_returns'] = np.log(1 + stores['simple_returns']).dropna()
+    if 'simple_returns' in stores:
+        stores['log_returns'] = np.log(1 + stores['simple_returns']).dropna()
     
-    # Pre-calculate market caps
-    shares_wide = prices_long.pivot(index='date', columns='ticker', values='shares_outstanding')
-    stores['market_caps'] = (stores['prices_wide'] * shares_wide).dropna(how='all')
-
     print("Data stores prepared successfully.")
     return stores
 
@@ -126,7 +136,14 @@ def main():
             var_view, var_diags = create_var_view(returns_slice, cfg.return_engine.var)
             
             # Black-Litterman (with Qualitative Views)
-            qual_views = yaml.safe_load(Path(cfg.black_litterman.qualitative_views_file).read_text())['views'] if cfg.black_litterman.qualitative_views_file else None
+            qual_views = None
+            if cfg.black_litterman.qualitative_views_file:
+                qual_views_path = project_root / cfg.black_litterman.qualitative_views_file
+                if qual_views_path.exists():
+                    qual_views = yaml.safe_load(qual_views_path.read_text())['views']
+                else:
+                    print(f"Warning: Qualitative views file not found at {qual_views_path}")
+
             model_views = {'ff_view': ff_view, 'var_view': var_view}
             P, Q = build_full_view_matrices(model_views, qual_views, final_universe)
             
@@ -173,11 +190,14 @@ def main():
     results_history['returns'] = results_history['portfolio_value'].pct_change().fillna(0)
     
     # Performance Metrics
+    total_years = (results_history.index[-1] - results_history.index[0]).days / 365.25
+    periods_per_year = len(rebalance_dates) / total_years if total_years > 0 else 0
+    
     metrics = compute_performance_metrics(
         results_history['returns'],
         data_stores['market_simple_returns'].reindex(results_history.index).ffill(),
         data_stores['risk_free_daily']['rf_daily'].reindex(results_history.index).ffill(),
-        periods_per_year=len(rebalance_dates) / (cfg.backtest.end_year - cfg.backtest.start_year + 1)
+        periods_per_year=periods_per_year
     )
     print("\n--- PERFORMANCE SUMMARY ---\n", metrics)
     

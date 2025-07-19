@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Literal, Optional, Dict
+from typing import Literal, Optional, Dict, Any
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -30,7 +30,7 @@ class DccConfig(BaseModel):
 
 class ShrinkageConfig(BaseModel):
     """Configuration for covariance shrinkage."""
-    method: Literal["ledoit_wolf", "ledoit_wolf_constant_corr", "manual"]
+    method: Literal["ledoit_wolf_constant_corr", "manual"]
     floor: float = Field(0.0, ge=0, lt=1)
 
 class RiskEngineConfig(BaseModel):
@@ -66,6 +66,8 @@ class BlackLittermanConfig(BaseModel):
     """Configuration for the Black-Litterman synthesizer."""
     tau: float = Field(..., gt=0, lt=1)
     confidence: BLConfidenceConfig
+    # Per Amendment 1
+    qualitative_views_file: Optional[str] = None
 
 class OptimizerConfig(BaseModel):
     """Configuration for the portfolio optimizer."""
@@ -82,23 +84,41 @@ class BacktestConfig(BaseModel):
     start: str
     end: str
     costs_bps: int = Field(..., ge=0)
+    # Per Amendment 1
+    initial_capital: float = Field(1_000_000.0, gt=0)
+
+
+# --- Models from Amendment 1 ---
+
+class MetaConfig(BaseModel):
+    """Configuration for portfolio metadata."""
+    portfolio_name: str
+    base_currency: Literal["BRL"]
+
+class UniverseConfig(BaseModel):
+    """Configuration for asset universe and FX factor handling."""
+    include_fx_factor: bool = False
+    fx_series_id: int = 1
+    asset_flags: Dict[str, Dict[str, Any]] = {}
+
+class TaxConfig(BaseModel):
+    """Configuration for Brazilian tax calculation."""
+    enable: bool = False
+    brokerage_fee_bps: int = Field(0, ge=0)
 
 # --- Top-Level Configuration Model ---
 
 class Config(BaseModel):
     """The main configuration object, loading all sub-sections."""
+    meta: MetaConfig
     data: DataConfig
+    universe: UniverseConfig
     risk_engine: RiskEngineConfig
     return_engine: ReturnEngineConfig
     black_litterman: BlackLittermanConfig
     optimizer: OptimizerConfig
+    tax: TaxConfig
     backtest: BacktestConfig
-    
-    # Per Amendment 1
-    # These fields are optional to maintain backwards compatibility.
-    universe: Optional[Dict] = None
-    tax: Optional[Dict] = None
-    meta: Optional[Dict] = None
 
 
 def load_config(config_path: str | Path) -> Config:
@@ -125,14 +145,25 @@ if __name__ == '__main__':
     # This block is for demonstrating and testing the config loading.
     # It requires creating a sample YAML file.
 
-    # 1. Create a dummy YAML for testing
+    # 1. Create a dummy YAML for testing, now including amended fields
     dummy_yaml_content = """
+meta:
+  portfolio_name: Test_Portfolio_A
+  base_currency: BRL
+
 data:
   start: 2010-01-01
   end: 2025-01-01
   tickers_file: config/universe_small.csv
   selic_series: 11
   publish_lag_days: 3
+
+universe:
+  include_fx_factor: true
+  fx_series_id: 1
+  asset_flags:
+    PETR4.SA: {fx_sensitive: false}
+    AAPL34.SA: {fx_sensitive: true}
 
 risk_engine:
   garch:
@@ -162,6 +193,7 @@ black_litterman:
     method: rmse_based
     factor_scaler: 1.0
     var_scaler: 0.5
+  qualitative_views_file: views/qualitative_views_A.yaml
 
 optimizer:
   objective: max_sharpe
@@ -170,12 +202,17 @@ optimizer:
   sector_cap: 0.25
   turnover_penalty_bps: 5
 
+tax:
+  enable: true
+  brokerage_fee_bps: 5
+
 backtest:
   lookback_years: 5
   rebalance: monthly
   start: 2012-01-01
   end: 2025-01-01
   costs_bps: 10
+  initial_capital: 500000.0
 """
     # Create a temporary directory and file
     temp_dir = Path("./temp_config")
@@ -190,12 +227,13 @@ backtest:
         config = load_config(dummy_config_path)
         print("Configuration loaded and validated successfully!")
         
-        # 3. Access nested parameters
+        # 3. Access nested parameters, including new ones
         print("\n--- Accessing Parameters ---")
-        print(f"Project Data Start Date: {config.data.start}")
-        print(f"Risk Engine Shrinkage Method: {config.risk_engine.shrinkage.method}")
-        print(f"Black-Litterman Tau: {config.black_litterman.tau}")
-        print(f"Optimizer Name Cap: {config.optimizer.name_cap}")
+        print(f"Portfolio Name: {config.meta.portfolio_name}")
+        print(f"FX Factor Enabled: {config.universe.include_fx_factor}")
+        print(f"Tax Calculation Enabled: {config.tax.enable}")
+        print(f"Qualitative Views File: {config.black_litterman.qualitative_views_file}")
+        print(f"Initial Capital for Backtest: {config.backtest.initial_capital}")
 
     except Exception as e:
         print(f"An error occurred: {e}")

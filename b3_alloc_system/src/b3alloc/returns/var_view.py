@@ -48,6 +48,8 @@ def create_var_view(
         
         diagnostics['selected_lag_order'] = results.k_ar
         diagnostics['is_stable'] = results.is_stable()
+        # Per spec, the forecast error variance is crucial for BL confidence
+        diagnostics['sigma_u'] = results.sigma_u
         
         if not diagnostics['is_stable']:
             print("Warning: Fitted VAR model is unstable. Forecasts may be unreliable.")

@@ -12,8 +12,8 @@ def build_absolute_views(
     Constructs the Black-Litterman P and Q matrices for absolute, model-driven views.
     (This function remains largely the same but is now a component of the full builder).
     """
-    if sorted(universe) != universe:
-        raise ValueError("The 'universe' list must be sorted alphabetically.")
+    # Ensure the universe is sorted for consistent matrix construction
+    universe = sorted(universe)
 
     p_matrices = []
     q_vectors = []
@@ -110,7 +110,7 @@ if __name__ == '__main__':
     print("\nFinal Q Vector (Stacked):\n", Q)
     
     # --- Validation ---
-    # Universe order: ITUB4, PETR4, VALE3
+    # Universe order should be sorted: ITUB4.SA, PETR4.SA, VALE3.SA
     
     # Expected P from models (3 views)
     P_exp_model = np.eye(3)
@@ -139,3 +139,11 @@ if __name__ == '__main__':
     assert np.allclose(Q, expected_Q), "Final Q vector content is incorrect."
     
     print("\nOK: Model-driven and qualitative views were correctly stacked into final P and Q.")
+
+    # --- Test with unsorted universe ---
+    print("\n--- Testing with unsorted universe ---")
+    unsorted_universe = ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA']
+    P_unsorted, Q_unsorted = build_full_view_matrices(model_views_test, qual_views_test, unsorted_universe)
+    assert np.allclose(P_unsorted, expected_P), "P matrix is incorrect when universe is unsorted."
+    assert np.allclose(Q_unsorted, expected_Q), "Q vector is incorrect when universe is unsorted."
+    print("OK: View builder correctly handles unsorted universe input.")

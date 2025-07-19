@@ -34,20 +34,20 @@ def fit_dcc_model(
 
     num_assets = standardized_residuals.shape[1]
     if num_assets < 2:
-        # print("Warning: DCC model requires at least 2 assets. Skipping.")
+        print("Warning: DCC model requires at least 2 assets. Skipping.")
         return None, None
     
     # Define the GARCH specification for the DCC model.
-    # Since we are passing in already standardized residuals, we specify a
-    # simple GARCH(1,1) model. The DCC model will handle the correlations.
-    vol_model = arch_model(standardized_residuals.iloc[:, 0], vol='Garch', p=1, q=1)
-    for i in range(1, num_assets):
-        vol_model += arch_model(standardized_residuals.iloc[:, i], vol='Garch', p=1, q=1)
-
-    # Specify the DCC correlation structure
-    vol_model.cov_type = 'DCC'
-    vol_model.cov_p = 1
-    vol_model.cov_q = 1
+    # The 'arch' library is designed to handle multiple series by passing
+    # the entire DataFrame of residuals to the model constructor.
+    # The original loop-based construction was incorrect.
+    vol_model = arch_model(
+        standardized_residuals, 
+        vol='Garch', 
+        p=1, q=1, 
+        cov_type='DCC', 
+        cov_p=1, cov_q=1
+    )
 
     try:
         # Fit the model. Scaling is not needed as residuals are already standardized.
@@ -55,11 +55,11 @@ def fit_dcc_model(
         fit_result = vol_model.fit(disp='off', options={'maxiter': 500})
         
         if not fit_result.convergence_flag == 0:
-            # print(f"Warning: DCC model did not converge. Status: {fit_result.convergence_flag}")
+            print(f"Warning: DCC model did not converge. Status: {fit_result.convergence_flag}")
             return None, None
 
     except Exception as e:
-        # print(f"Warning: DCC model failed to fit. Error: {e}")
+        print(f"Warning: DCC model failed to fit. Error: {e}")
         return None, None
         
     # Forecast one step ahead

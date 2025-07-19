@@ -46,8 +46,11 @@ def create_markdown_report(run_path: Path) -> str:
     plots += "![Equity Curve](./equity_curve.png)\n\n"
     plots += "### Drawdowns\n"
     plots += "![Drawdowns](./drawdowns.png)\n\n"
-    plots += "### Portfolio Weights Evolution\n"
-    plots += "![Weights Evolution](./weights_evolution.png)\n\n"
+    
+    # Conditionally include the weights plot if it exists
+    if (run_path / "weights_evolution.png").exists():
+        plots += "### Portfolio Weights Evolution\n"
+        plots += "![Weights Evolution](./weights_evolution.png)\n\n"
     
     # Configuration
     config_section = "## 3. Configuration\n\n"

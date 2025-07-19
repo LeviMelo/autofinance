@@ -65,31 +65,25 @@ def build_fama_french_factors(
     print("Building Fama-French 3 factors for B3...")
 
     # 1. Create a daily panel with all necessary metrics
-    # Pivot fundamentals to wide for easier alignment
-    shares_wide = daily_fundamentals_df.pivot(index='date', columns='ticker', values='shares_outstanding')
-    book_equity_wide = daily_fundamentals_df.pivot(index='date', columns='ticker', values='book_equity')
-
-    # Align all dataframes to the returns index
-    prices, returns, shares, book_equity = pd.align(
-        prices_df, returns_df, shares_wide, book_equity_wide, join='inner', axis=0
-    )
-    
-    market_cap = prices * shares
-    book_to_market = book_equity / market_cap
+    market_cap_df = prices_df * daily_fundamentals_df.pivot(index='date', columns='ticker', values='shares_outstanding')
+    book_to_market_df = daily_fundamentals_df.pivot(index='date', columns='ticker', values='book_equity') / market_cap_df
     
     # 2. Determine portfolio assignments at the beginning of each month
-    # This is a common simplification of the quarterly re-formation rule
-    formation_dates = returns.resample('M').first().index
+    formation_dates = returns_df.resample('M').first().index
     
-    all_assignments = pd.DataFrame(index=returns.index, columns=returns.columns)
+    all_assignments = pd.DataFrame(index=returns_df.index, columns=returns_df.columns)
 
     print("Determining monthly portfolio assignments...")
     for date in formation_dates:
-        if date not in market_cap.index: continue
-            
+        # Ensure the date exists in our market cap index before proceeding
+        if date not in market_cap_df.index:
+            closest_date = market_cap_df.index.asof(date)
+            if closest_date is pd.NaT: continue
+            date = closest_date
+
         data_for_formation = pd.DataFrame({
-            'market_cap': market_cap.loc[date],
-            'book_to_market': book_to_market.loc[date]
+            'market_cap': market_cap_df.loc[date],
+            'book_to_market': book_to_market_df.loc[date]
         })
         assignments = _get_factor_portfolio_assignments(data_for_formation)
         all_assignments.loc[date] = assignments
@@ -98,10 +92,10 @@ def build_fama_french_factors(
     all_assignments = all_assignments.ffill()
 
     # 3. Calculate daily returns for the 6 value-weighted portfolios
-    portfolio_returns = pd.DataFrame(index=returns.index)
+    portfolio_returns = pd.DataFrame(index=returns_df.index)
     
     # Previous day's market cap is used for weighting today's returns
-    mkt_cap_lagged = market_cap.shift(1)
+    mkt_cap_lagged = market_cap_df.shift(1)
 
     print("Calculating daily value-weighted portfolio returns...")
     for portfolio_name in ['Small_Low', 'Small_Mid', 'Small_High', 'Big_Low', 'Big_Mid', 'Big_High']:
@@ -113,7 +107,7 @@ def build_fama_french_factors(
         weights = (mkt_cap_lagged * mask).div(portfolio_mkt_cap, axis=0).fillna(0)
         
         # Portfolio return is the sum of weighted constituent returns
-        portfolio_returns[portfolio_name] = (returns * weights).sum(axis=1)
+        portfolio_returns[portfolio_name] = (returns_df * weights).sum(axis=1)
 
     # 4. Calculate SMB and HML factor returns
     # SMB = (Small/Low + Small/Mid + Small/High)/3 - (Big/Low + Big/Mid + Big/High)/3

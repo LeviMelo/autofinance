@@ -19,7 +19,8 @@ def compute_performance_metrics(
     strategy_returns: pd.Series,
     benchmark_returns: pd.Series,
     risk_free_rate: pd.Series,
-    periods_per_year: int
+    periods_per_year: int,
+    mar: float = 0.0
 ) -> pd.Series:
     """
     Computes a comprehensive set of performance and risk analytics for a strategy.
@@ -29,6 +30,7 @@ def compute_performance_metrics(
         benchmark_returns: A pandas Series of the benchmark's periodic returns.
         risk_free_rate: A pandas Series of the risk-free rate for the same periods.
         periods_per_year: The number of return periods in a year (e.g., 12 for monthly).
+        mar: The minimum acceptable return (MAR) for the Sortino ratio calculation.
 
     Returns:
         A pandas Series containing all calculated performance metrics.
@@ -59,7 +61,7 @@ def compute_performance_metrics(
     sharpe_ratio = (cagr_strategy - annualized_rf) / vol_strategy
     
     # Sortino Ratio
-    downside_returns = data['strategy'][data['strategy'] < 0]
+    downside_returns = data['strategy'][data['strategy'] < mar]
     downside_deviation = downside_returns.std() * np.sqrt(periods_per_year)
     sortino_ratio = (cagr_strategy - annualized_rf) / downside_deviation if downside_deviation > 0 else np.inf
     
@@ -130,7 +132,7 @@ if __name__ == '__main__':
     # --- WHEN ---
     try:
         performance_summary = compute_performance_metrics(
-            strategy_returns, benchmark_returns, risk_free_rate, periods_per_year
+            strategy_returns, benchmark_returns, risk_free_rate, periods_per_year, mar=0.0
         )
         
         # --- THEN ---
@@ -154,6 +156,14 @@ if __name__ == '__main__':
         
         assert abs(performance_summary['Beta'] - beta_sim) < 0.1
         print(f"OK: Estimated Beta ({performance_summary['Beta']:.4f}) is close to simulated beta ({beta_sim}).")
+
+        # --- Test with non-zero MAR ---
+        print("\n--- Testing with non-zero MAR ---")
+        performance_summary_mar = compute_performance_metrics(
+            strategy_returns, benchmark_returns, risk_free_rate, periods_per_year, mar=0.01
+        )
+        assert performance_summary_mar['Sortino Ratio'] != performance_summary['Sortino Ratio']
+        print("OK: Sortino Ratio changes with a non-zero MAR.")
 
     except Exception as e:
         import traceback

@@ -24,8 +24,8 @@ def parse_qualitative_views(
         - P (np.ndarray): The KxN pick matrix for the qualitative views.
         - Q (np.ndarray): The Kx1 vector of view values.
     """
-    if sorted(universe) != universe:
-        raise ValueError("The 'universe' list must be sorted alphabetically.")
+    # Ensure the universe is sorted for consistent matrix construction
+    universe = sorted(universe)
 
     num_assets = len(universe)
     p_rows = []
@@ -142,3 +142,11 @@ if __name__ == '__main__':
     assert np.allclose(Q_qual, expected_Q), "Q vector content is incorrect."
     
     print("\nOK: Parser correctly translates qualitative views into P and Q matrices.")
+
+    # --- Test with unsorted universe ---
+    print("\n--- Testing with unsorted universe ---")
+    unsorted_universe = ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'MGLU3.SA']
+    P_unsorted, Q_unsorted = parse_qualitative_views(view_defs, unsorted_universe)
+    assert np.allclose(P_unsorted, expected_P), "P matrix is incorrect when universe is unsorted."
+    assert np.allclose(Q_unsorted, expected_Q), "Q vector is incorrect when universe is unsorted."
+    print("OK: Parser correctly handles unsorted universe input.")

@@ -107,9 +107,13 @@ class BacktestEngine:
             sigma_final, diags = build_covariance_matrix(log_returns.dropna(), cfg.risk_engine)
             final_universe = sorted(sigma_final.columns.tolist())
             
-            # TODO: Integrate real factor/view generation here
-            ff_view = pd.Series(0.08, index=final_universe) # Placeholder
-            var_view = pd.Series(0.07, index=final_universe) # Placeholder
+            # --- View Generation ---
+            ff_betas, ff_view = create_fama_french_view(
+                self.data_stores['excess_log_returns'].loc[lookback_start:rebalance_date, final_universe],
+                self.data_stores['factors'].loc[lookback_start:rebalance_date],
+                cfg.return_engine.factor
+            )
+            var_view, var_diags = create_var_view(log_returns.dropna(), cfg.return_engine.var)
             views = {'ff_view': ff_view, 'var_view': var_view}
             
             market_caps = self.data_stores['market_caps'].loc[rebalance_date, final_universe]
@@ -118,10 +122,18 @@ class BacktestEngine:
             pi_prior = calculate_equilibrium_returns(lambda_aversion, sigma_final, market_weights)
             
             P, Q = build_absolute_views(views, final_universe)
-            Omega = np.diag(np.full(P.shape[0], 0.005)) # Placeholder
             
-            mu_posterior = calculate_posterior_returns(pi_prior, sigma_final, P, Q, Omega, cfg.black_litterman['tau'])
-            
+            if P is None or Q is None:
+                print("  -> No valid views generated. Falling back to prior.")
+                mu_posterior = pi_prior
+            else:
+                Omega = estimate_view_uncertainty(
+                    views,
+                    {'ff_view': {'res_var': ff_betas['residual_variance']}, 'var_view': var_diags},
+                    cfg.black_litterman
+                )
+                mu_posterior = calculate_posterior_returns(pi_prior, sigma_final, P, Q, Omega, cfg.black_litterman['tau'])
+
             # --- Optimization ---
             w_var = cp.Variable(len(final_universe))
             constraints = build_optimizer_constraints(w_var, cfg.optimizer, final_universe)

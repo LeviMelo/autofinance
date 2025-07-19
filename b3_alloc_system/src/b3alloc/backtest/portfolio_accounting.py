@@ -90,8 +90,9 @@ class PortfolioLedger:
                 # Remove ticker if we sold all shares
                 self.holdings.drop(ticker, inplace=True)
                 
-        # After all trades, record the new state
-        self.record_state(date, trade_prices)
+            # After each trade, record the new state
+            self.record_state(date, trade_prices)
+            
         return total_cost
 
 
@@ -163,3 +164,8 @@ if __name__ == '__main__':
     assert np.isclose(value2, expected_value2)
     
     print("\nOK: Portfolio ledger correctly tracks holdings, cash, and value across trades.")
+
+    # --- Test history recording ---
+    print("\n--- Testing history recording ---")
+    assert len(ledger.history) == 5, "Expected 5 history records (initial + 2 buys + 2 rebal trades)."
+    print("OK: History is being recorded for each transaction.")

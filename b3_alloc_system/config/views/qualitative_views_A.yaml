@@ -1,0 +1,9 @@
+views:
+  - type: relative
+    expr: "VALE3.SA – PETR4.SA"
+    magnitude: 0.02
+    confidence: 0.6
+  - type: absolute
+    expr: "MGLU3.SA"
+    magnitude: -0.03
+    confidence: 0.4 
