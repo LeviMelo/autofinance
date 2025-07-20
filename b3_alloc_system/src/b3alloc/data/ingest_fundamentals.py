@@ -1,57 +1,94 @@
 import pandas as pd
 import investpy
+import brfinance as brf
 import time
-from typing import List
+from typing import List, Optional
 import numpy as np
+
+def _fetch_shares_outstanding_from_cvm(ticker_sa: str) -> Optional[pd.DataFrame]:
+    """
+    Fetches a time series of historical shares outstanding from CVM (via brfinance).
+    """
+    cleaned_ticker = ticker_sa.split('.')[0]
+    try:
+        # brfinance uses the CVM code, which is often the first part of the ticker
+        df_cvm = brf.get_canvas(company=cleaned_ticker, from_year=2010, canvas_type="shares")
+        if df_cvm is None or df_cvm.empty:
+            print(f"Warning: brfinance returned no share data for {ticker_sa}.")
+            return None
+            
+        # Select and rename columns for consistency
+        df_cvm = df_cvm[['종료일', '주식수']].rename(columns={
+            '종료일': 'fiscal_period_end',
+            '주식수': 'shares_outstanding'
+        })
+        df_cvm['fiscal_period_end'] = pd.to_datetime(df_cvm['fiscal_period_end'])
+        # The number can have commas, remove them and convert to numeric
+        df_cvm['shares_outstanding'] = df_cvm['shares_outstanding'].astype(str).str.replace(',', '').astype(float)
+        
+        # Keep only the last report for each quarter to avoid intra-quarter duplicates
+        df_cvm = df_cvm.drop_duplicates(subset='fiscal_period_end', keep='last')
+        
+        return df_cvm.set_index('fiscal_period_end')
+        
+    except Exception as e:
+        print(f"Warning: Could not fetch CVM shares data for {ticker_sa}: {e}")
+        return None
+
 
 def _fetch_single_ticker_fundamentals(ticker_sa: str) -> pd.DataFrame:
     """
-    Fetches historical fundamentals for a single ticker from invest.com.
-    - Book Equity is from the quarterly balance sheet.
-    - Shares Outstanding is the latest available figure, used as a proxy for all periods.
+    Fetches historical fundamentals for a single ticker.
+    - Book Equity is from investpy (quarterly balance sheet).
+    - Shares Outstanding is from CVM filings (brfinance) for a proper time series.
+      Falls back to investpy's latest figure as a proxy if CVM fails.
     """
     cleaned_ticker = ticker_sa.split('.')[0]
     
     try:
-        # 1. Fetch Balance Sheet for Book Equity
+        # 1. Fetch Book Equity from investpy
         bs_df = investpy.get_stock_financial_summary(
             stock=cleaned_ticker,
             country='brazil',
             summary_type='balance_sheet',
             period='quarterly'
         )
-        # Rename and select the 'Total Equity' column
         bs_df = bs_df.rename(columns={'Total Equity': 'book_equity'})
         if 'book_equity' not in bs_df.columns:
             print(f"Warning: 'Total Equity' not found for {ticker_sa}.")
             return pd.DataFrame()
         
-        fundamentals_df = bs_df[['book_equity']].copy()
+        bs_df = bs_df[['book_equity']].copy()
+        bs_df.index = pd.to_datetime(bs_df.index)
+        bs_df.index.name = 'fiscal_period_end'
 
-        # 2. Fetch latest Shares Outstanding from general information
-        info_df = investpy.get_stock_information(
-            stock=cleaned_ticker,
-            country='brazil',
-            as_json=True
-        )
-        shares_outstanding = info_df.get('Shares Outstanding')
-        if shares_outstanding is None:
-            print(f"Warning: Could not retrieve 'Shares Outstanding' for {ticker_sa}.")
-            fundamentals_df['shares_outstanding'] = np.nan
+        # 2. Fetch historical Shares Outstanding from CVM
+        shares_df = _fetch_shares_outstanding_from_cvm(ticker_sa)
+
+        # 3. Combine sources or use fallback
+        if shares_df is not None:
+            # Merge CVM shares with investpy book equity.
+            # Use left join to keep all book equity dates, and ffill to fill gaps in share counts.
+            fundamentals_df = bs_df.join(shares_df, how='left')
+            fundamentals_df['shares_outstanding'] = fundamentals_df['shares_outstanding'].ffill()
         else:
-            # The value is a string like "4443236000.0", convert to float
-            fundamentals_df['shares_outstanding'] = float(shares_outstanding)
+            # Fallback to old method: use latest shares from investpy as proxy
+            print(f"Info: Falling back to investpy proxy for shares outstanding for {ticker_sa}.")
+            fundamentals_df = bs_df
+            info_df = investpy.get_stock_information(stock=cleaned_ticker, country='brazil', as_json=True)
+            shares_outstanding_proxy = info_df.get('Shares Outstanding')
+            if shares_outstanding_proxy is not None:
+                fundamentals_df['shares_outstanding'] = float(shares_outstanding_proxy)
+            else:
+                fundamentals_df['shares_outstanding'] = np.nan
 
-        # 3. Format the DataFrame
+        # 4. Final Formatting
+        fundamentals_df = fundamentals_df.dropna(subset=['book_equity', 'shares_outstanding'])
         fundamentals_df['ticker'] = ticker_sa
-        fundamentals_df = fundamentals_df.reset_index().rename(columns={'Date': 'fiscal_period_end'})
+        fundamentals_df = fundamentals_df.reset_index()
         
-        # publish_date is not available, so we will leave it out for now.
-        # It can be proxied by adding 3 months to fiscal_period_end if needed later.
-        fundamentals_df['publish_date'] = pd.NaT 
-
-        # book_per_share can be calculated later if needed (book_equity / shares_outstanding)
-        fundamentals_df['book_per_share'] = np.nan
+        fundamentals_df['publish_date'] = pd.NaT # Will be calculated later based on lag
+        fundamentals_df['book_per_share'] = fundamentals_df['book_equity'] / fundamentals_df['shares_outstanding']
         
         return fundamentals_df
 
@@ -114,16 +151,14 @@ if __name__ == '__main__':
             print("\n--- Test Results ---")
             print("Shape:", fundamentals.shape)
             print("Columns:", fundamentals.columns.tolist())
-            print("\nData for PETR4.SA:")
+            print("\nData for PETR4.SA (shows variation in shares):")
             print(fundamentals[fundamentals['ticker'] == 'PETR4.SA'].tail())
-            print("\nData for VALE3.SA:")
+            print("\nData for VALE3.SA (shows variation in shares):")
             print(fundamentals[fundamentals['ticker'] == 'VALE3.SA'].tail())
 
-            # Check for nulls
-            if fundamentals['shares_outstanding'].isnull().any():
-                print("\nWarning: Found nulls in 'shares_outstanding'.")
-            if fundamentals['book_equity'].isnull().any():
-                print("\nWarning: Found nulls in 'book_equity'.")
+            # Check that BPS is now calculated
+            if fundamentals['book_per_share'].isnull().any():
+                print("\nWarning: Found nulls in 'book_per_share'.")
         else:
             print("\nTest failed: No data was returned.")
             

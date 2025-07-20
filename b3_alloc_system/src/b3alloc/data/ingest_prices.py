@@ -2,9 +2,44 @@ import pandas as pd
 import yfinance as yf
 from typing import List, Dict
 import time
+from requests.exceptions import HTTPError
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 # Assuming this script is run from a context where 'b3alloc' is in the python path
 from ..utils_dates import get_b3_trading_calendar
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30), # Exponential backoff: 2s, 4s, 8s, ... up to 30s
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type((HTTPError, ConnectionError, TimeoutError))
+)
+def _download_chunk_with_tenacity(chunk: List[str], start: str, end: str) -> pd.DataFrame:
+    """
+    Downloads a single chunk of tickers using yfinance, wrapped in a tenacity retry decorator.
+    """
+    print(f"  - Downloading chunk: {chunk}")
+    df = yf.download(
+        tickers=chunk,
+        start=start,
+        end=end,
+        auto_adjust=False,
+        actions=True,
+        interval="1d",
+        threads=False,
+        progress=False,
+    )
+    # yfinance can return an empty DataFrame with a warning for invalid tickers,
+    # so we check if all columns are missing data, which can indicate a deeper issue.
+    if df.empty or df.columns.empty:
+         # Check if it's just a case of no data in the range for valid tickers
+        if yf.Ticker(chunk[0]).history(period="1d").empty:
+            print(f"Warning: No data for chunk {chunk}, possibly invalid tickers or no history.")
+            return pd.DataFrame()
+        # Otherwise, raise to trigger retry for transient issues
+        raise ConnectionError(f"Download for chunk {chunk} returned an empty frame.")
+        
+    return df
+
 
 def fetch_yfinance_data(
     tickers: List[str],
@@ -13,13 +48,15 @@ def fetch_yfinance_data(
     index_ticker: str = "^BVSP",
     max_retries: int = 5,
     backoff_factor: float = 0.5,
+    chunk_size: int = 12,
 ) -> Dict[str, pd.DataFrame]:
     """
     Fetches historical market data for a list of tickers and a benchmark index.
 
     This function downloads daily Open, High, Low, Close, Adjusted Close, and Volume
     data from Yahoo Finance. It also fetches corporate actions (dividends and splits).
-    It includes a retry mechanism with exponential backoff to handle rate limits.
+    It includes a retry mechanism with exponential backoff to handle rate limits,
+    and downloads tickers in chunks to avoid overwhelming the API.
 
     Args:
         tickers: A list of B3 ticker symbols to download (e.g., ['PETR4.SA', 'VALE3.SA']).
@@ -28,6 +65,7 @@ def fetch_yfinance_data(
         index_ticker: The ticker for the benchmark index (default: ^BVSP for IBOVESPA).
         max_retries: Maximum number of times to retry the download.
         backoff_factor: Factor to determine the delay between retries (delay = backoff_factor * 2**attempt).
+        chunk_size: The number of tickers to download in each batch.
 
     Returns:
         A dictionary containing:
@@ -36,67 +74,69 @@ def fetch_yfinance_data(
         - 'actions': A dictionary of DataFrames, with each ticker as a key,
                      containing its corporate actions.
     """
-    all_tickers_to_download = tickers + [index_ticker]
-    print(f"Downloading data for {len(tickers)} assets and index {index_ticker}...")
+    tickers = list(dict.fromkeys(tickers))  # dedupe while preserving order
+    print(f"Downloading {len(tickers)} tickers in chunks of {chunk_size}...")
 
-    # yfinance is more efficient when downloading all tickers in one call
-    data = None
-    for attempt in range(max_retries):
+    all_price_frames = []
+    failed_chunks = []
+    # 1. Download equities in manageable chunks
+    for idx in range(0, len(tickers), chunk_size):
+        chunk = tickers[idx: idx + chunk_size]
+        if not chunk:
+            continue
+        
         try:
-            data = yf.download(
-                all_tickers_to_download,
-                start=start_date,
-                end=end_date,
-                auto_adjust=False,  # We want both Close and Adj Close for audit purposes
-                actions=True,       # Fetch dividends and stock splits
-                progress=True,
-                interval="1d"
-            )
-            # If download is successful, break the loop
-            if data is not None and not data.empty:
-                # Basic check to see if we got data for all requested tickers
-                if len(data.columns.get_level_values(1).unique()) == len(all_tickers_to_download):
-                     break
-                else:
-                     print(f"Warning: Data downloaded for {len(data.columns.get_level_values(1).unique())}/{len(all_tickers_to_download)} tickers.")
-                     # Continue loop to retry for missing tickers
-            
+            df_chunk = _download_chunk_with_tenacity(chunk, start=start_date, end=end_date)
+            if not df_chunk.empty:
+                all_price_frames.append(df_chunk)
         except Exception as e:
-            print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
-            if attempt + 1 == max_retries:
-                print("Max retries reached. Failed to download data.")
-                raise  # Re-raise the last exception
-            
-            sleep_time = backoff_factor * (2 ** attempt)
-            print(f"Waiting for {sleep_time:.2f} seconds before retrying...")
-            time.sleep(sleep_time)
+            print(f"Chunk {chunk} failed after all retries: {e}")
+            failed_chunks.append(chunk)
 
-    if data is None or data.empty:
-        # This part is now less likely to be reached, but kept as a safeguard.
-        # The retry loop should handle most failures.
-        raise ValueError("Yahoo Finance returned no data after multiple retries. Check tickers and date range.")
+    # 2. Download the benchmark index separately
+    try:
+        index_df = _download_chunk_with_tenacity([index_ticker], start=start_date, end=end_date)
+    except Exception as e:
+        print(f"Index {index_ticker} failed after all retries: {e}")
+        index_df = pd.DataFrame()
 
-    # Separate index from equities
-    index_data = data.loc[:, (slice(None), index_ticker)].copy()
-    index_data.columns = index_data.columns.droplevel(1) # Remove ticker level from columns
 
-    price_data = data
-    if index_ticker in tickers:
-        price_data = data.drop(index_ticker, axis=1, level=1)
-    
+    if not all_price_frames:
+        raise ValueError("Yahoo Finance download returned empty data for all ticker chunks.")
+
+    # Combine all equity chunks horizontally (columns are MultiIndex)
+    data_prices_full = pd.concat(all_price_frames, axis=1)
+
+    # Append the index columns (avoid duplicate column names)
+    if not index_df.empty:
+        data_prices_full = pd.concat([data_prices_full, index_df], axis=1)
+
+    # Separate index from equities (guard if index failed)
+    if index_ticker in data_prices_full.columns.get_level_values(1):
+        index_data = data_prices_full.loc[:, (slice(None), index_ticker)].copy()
+        index_data.columns = index_data.columns.droplevel(1)
+        price_data = data_prices_full.drop(index_ticker, axis=1, level=1)
+    else:
+        print(f"Warning: Index ticker {index_ticker} missing from download.")
+        index_data = pd.DataFrame()
+        price_data = data_prices_full
+
     # Separate prices from actions
     price_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
     actions_cols = ['Dividends', 'Stock Splits']
     
-    # Use a dictionary comprehension for a cleaner extraction
-    prices = {
-        col: price_data.loc[:, (col, tickers)]
-        for col in price_cols if (col, tickers[0]) in price_data.columns
-    }
-    actions_raw = {
-        col: price_data.loc[:, (col, tickers)]
-        for col in actions_cols if (col, tickers[0]) in price_data.columns
-    }
+    prices = {}
+    actions_raw = {}
+
+    for col in price_cols:
+        sub_cols = [(col, tk) for tk in tickers if (col, tk) in price_data.columns]
+        if sub_cols:
+            prices[col] = price_data.loc[:, sub_cols]
+
+    for col in actions_cols:
+        sub_cols = [(col, tk) for tk in tickers if (col, tk) in price_data.columns]
+        if sub_cols:
+            actions_raw[col] = price_data.loc[:, sub_cols]
 
     # Reformat actions into a more usable dictionary
     actions_dict = {}
@@ -108,11 +148,11 @@ def fetch_yfinance_data(
             if not ticker_actions.empty:
                 actions_dict[ticker] = ticker_actions
 
-    # The price data is now in a dict of DataFrames, which is harder to work with.
-    # Let's pivot it back to the multi-level column format.
-    # This section is overly complex and can be simplified. The original was better.
-    # Reverting to a simpler multi-level column access.
-    prices_df = price_data.loc[:, pd.IndexSlice[:, tickers]].copy()
+    # Rebuild a clean price DataFrame: rows = date, columns = MultiIndex (ticker, field)
+    if price_data.empty:
+        raise ValueError("No equity price data available after processing.")
+
+    prices_df = price_data.copy()
     prices_df.columns = prices_df.columns.swaplevel(0, 1)
     prices_df = prices_df.sort_index(axis=1)
 
