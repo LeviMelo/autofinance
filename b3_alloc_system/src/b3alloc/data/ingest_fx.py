@@ -112,16 +112,14 @@ if __name__ == "__main__":
             print("\nOK: No missing values found.")
             
         # Validate return calculation
-        price_t1 = fx_df['USD_BRL'].iloc[1]
-        price_t0 = fx_df['USD_BRL'].iloc[0]
+       # validate the first *valid* return
+        price_t0, price_t1 = fx_df["USD_BRL"].iloc[0:2]
         expected_ret = np.log(price_t1 / price_t0)
-        
-        actual_ret = fx_df['USD_BRL_log_return'].iloc[0]
-        
-        assert np.isclose(expected_ret, actual_ret)
+        actual_ret   = fx_df["USD_BRL_log_return"].iloc[1]    # second row
+        assert np.isclose(expected_ret, actual_ret, rtol=1e-12, atol=1e-12)
         print("\nOK: Log return calculation is validated.")
         
     except Exception as e:
-        import traceback
+        import traceback  # ← add this
         print(f"\nAn error occurred during testing: {e}")
         traceback.print_exc()

@@ -1,18 +1,36 @@
-import pandas as pd
-import yfinance as yf
+# ── standard library ---------------------------------------------------------
 from typing import List, Dict
-import time
-from requests.exceptions import HTTPError
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+import pandas as pd
 
-# Assuming this script is run from a context where 'b3alloc' is in the python path
+# ── third‑party --------------------------------------------------------------
+import yfinance as yf
+from requests.exceptions import HTTPError
+from tenacity import (
+    retry,
+    wait_exponential,
+    stop_after_attempt,
+    retry_if_exception_type,
+)
+from yfinance.exceptions import YFRateLimitError  # runtime > 0.2.57
+
+# Optional global throttle (only exists on yfinance 0.2.38‑0.2.58)
+try:
+    from yfinance.utils import enable_ratelimit  # type: ignore
+    enable_ratelimit()
+except (ImportError, AttributeError):
+    pass  # rely on chunk_size + tenacity back‑off
+
+# ── project‑local ------------------------------------------------------------
 from ..utils_dates import get_b3_trading_calendar
 
 @retry(
-    wait=wait_exponential(multiplier=1, min=2, max=30), # Exponential backoff: 2s, 4s, 8s, ... up to 30s
-    stop=stop_after_attempt(5),
-    retry=retry_if_exception_type((HTTPError, ConnectionError, TimeoutError))
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    stop=stop_after_attempt(6),
+    retry=retry_if_exception_type(
+        (HTTPError, ConnectionError, TimeoutError, YFRateLimitError)
+    ),
 )
+
 def _download_chunk_with_tenacity(chunk: List[str], start: str, end: str) -> pd.DataFrame:
     """
     Downloads a single chunk of tickers using yfinance, wrapped in a tenacity retry decorator.
@@ -48,7 +66,7 @@ def fetch_yfinance_data(
     index_ticker: str = "^BVSP",
     max_retries: int = 5,
     backoff_factor: float = 0.5,
-    chunk_size: int = 12,
+    chunk_size: int = 3,        # was 12
 ) -> Dict[str, pd.DataFrame]:
     """
     Fetches historical market data for a list of tickers and a benchmark index.
@@ -93,16 +111,21 @@ def fetch_yfinance_data(
             print(f"Chunk {chunk} failed after all retries: {e}")
             failed_chunks.append(chunk)
 
-    # 2. Download the benchmark index separately
+    # Download the benchmark index separately
     try:
         index_df = _download_chunk_with_tenacity([index_ticker], start=start_date, end=end_date)
     except Exception as e:
         print(f"Index {index_ticker} failed after all retries: {e}")
         index_df = pd.DataFrame()
 
-
+    # If no equity tickers were requested, just return the index and empty frames
     if not all_price_frames:
-        raise ValueError("Yahoo Finance download returned empty data for all ticker chunks.")
+        if index_df.empty:
+            raise ValueError("Yahoo Finance download failed for both tickers and index.")
+        # If ONLY the index was requested and successful, prepare a valid return package
+        index_data = index_df.copy()
+        index_data.columns = index_data.columns.droplevel(1) # Flatten MultiIndex
+        return {"prices": pd.DataFrame(), "index": index_data, "actions": {}}
 
     # Combine all equity chunks horizontally (columns are MultiIndex)
     data_prices_full = pd.concat(all_price_frames, axis=1)
@@ -139,14 +162,20 @@ def fetch_yfinance_data(
             actions_raw[col] = price_data.loc[:, sub_cols]
 
     # Reformat actions into a more usable dictionary
-    actions_dict = {}
+    actions_dict: Dict[str, pd.DataFrame] = {}
     if actions_raw:
-        for ticker in tickers:
-            ticker_actions = pd.concat([df[ticker] for df in actions_raw.values()], axis=1)
-            ticker_actions.columns = actions_cols
-            ticker_actions = ticker_actions[ticker_actions.sum(axis=1) != 0]
-            if not ticker_actions.empty:
-                actions_dict[ticker] = ticker_actions
+       for tk in tickers:
+           frames = []
+           for fld, df in actions_raw.items():
+               col = (fld, tk)
+               if col in df.columns:
+                   # select the Series, rename to the field (Dividends / Stock Splits)
+                   frames.append(df[col].rename(fld))
+           if frames:
+               merged = pd.concat(frames, axis=1)
+               merged = merged[merged.sum(axis=1) != 0]  # keep only non‑zero rows
+               if not merged.empty:
+                   actions_dict[tk] = merged
 
     # Rebuild a clean price DataFrame: rows = date, columns = MultiIndex (ticker, field)
     if price_data.empty:
@@ -165,48 +194,35 @@ def create_equity_price_series(
 ) -> pd.DataFrame:
     """
     Orchestrates the download and cleaning of equity price data.
-
-    This function aligns the downloaded data to the B3 trading calendar and
-    formats it into the canonical 'prices_equity_daily' long format.
-
-    Args:
-        tickers: List of B3 ticker symbols.
-        start_date: The start date for the series.
-        end_date: The end date for the series.
-
-    Returns:
-        A long-format DataFrame with columns: ['date', 'ticker', 'adj_close', 'volume'].
+    ...
     """
     b3_calendar = get_b3_trading_calendar(start_date, end_date)
-    
-    # Add a buffer to start_date for yfinance to handle edge cases
     buffered_start = (pd.to_datetime(start_date) - pd.Timedelta(days=5)).strftime('%Y-%m-%d')
 
     data_bundle = fetch_yfinance_data(tickers, buffered_start, end_date)
     prices_wide = data_bundle['prices']
 
-    # This can be simplified by directly accessing the multi-level columns
-    adj_close = prices_wide.loc[:, pd.IndexSlice[:, 'Adj Close']]
-    adj_close.columns = adj_close.columns.droplevel(1)
+    # --- SLICE DATA ---
+    adj_close = prices_wide.xs('Adj Close', level=1, axis=1)
+    volume = prices_wide.xs('Volume', level=1, axis=1)
 
-    volume = prices_wide.loc[:, pd.IndexSlice[:, 'Volume']]
-    volume.columns = volume.columns.droplevel(1)
-
-    # Align to the official B3 calendar, forward-filling gaps
+    # --- ALIGN TO CALENDAR ---
     adj_close_aligned = adj_close.reindex(b3_calendar).ffill()
-    volume_aligned = volume.reindex(b3_calendar).fillna(0) # Fill volume gaps with 0
+    volume_aligned = volume.reindex(b3_calendar).fillna(0)
 
-    # Stack to convert from wide to long format
-    long_adj_close = adj_close_aligned.stack().rename('adj_close').reset_index()
-    long_adj_close = long_adj_close.rename(columns={'level_1': 'ticker'})
+    # --- NAME INDEXES FOR ROBUST CONVERSION ---
+    adj_close_aligned.index.name = "date"
+    adj_close_aligned.columns.name = "ticker" # Explicitly name columns
+    volume_aligned.index.name = "date"
+    volume_aligned.columns.name = "ticker" # Explicitly name columns
 
-    long_volume = volume_aligned.stack().rename('volume').reset_index()
-    long_volume = long_volume.rename(columns={'level_1': 'ticker'})
+    # --- WIDE TO LONG (ROBUST METHOD) ---
+    long_adj_close = adj_close_aligned.stack().reset_index(name="adj_close")
+    long_volume = volume_aligned.stack().reset_index(name="volume")
 
-    # Merge into the final canonical format
+    # This merge will now work reliably
     final_df = pd.merge(long_adj_close, long_volume, on=['date', 'ticker'])
     
-    # Remove rows where price is NaN (e.g., assets that did not exist at start of window)
     final_df = final_df.dropna(subset=['adj_close'])
     
     print(f"Successfully created equity price series for {len(tickers)} tickers.")

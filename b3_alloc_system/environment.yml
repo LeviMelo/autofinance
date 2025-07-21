@@ -12,7 +12,9 @@ dependencies:
   - scipy>=1.10.0
   - pydantic>=2.0
   - pyyaml>=6.0
-  - yfinance>=0.2.30
+  - yfinance>=0.2.61
+  - curl_cffi>=0.6            # yfinance backend
+  - brfinance>=0.0.9          # NEW
   - requests>=2.30.0
   - arch-py>=5.3.0
   - statsmodels>=0.14.0
