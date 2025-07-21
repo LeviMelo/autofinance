@@ -1,6 +1,7 @@
 import pandas as pd
 import holidays
 from functools import lru_cache
+import logging
 
 # Using ANBIMA rules from the 'holidays' library as a robust proxy for B3 financial market holidays.
 # Caching the holiday generation per year is a significant performance boost.
@@ -67,20 +68,20 @@ def generate_rebalance_dates(
     end_date = pd.to_datetime(end_date)
     full_calendar = get_b3_trading_calendar(start_date, end_date)
 
-    if frequency.upper() == "M":
+    if frequency.lower().startswith("m"): # Accept 'M', 'monthly', etc.
         # Get the last day of all months in the period
         month_ends = pd.date_range(start=start_date, end=end_date, freq="M")
         
         # Find the closest preceding trading day for each month-end.
-        # The 'asof' method is perfect for this "point-in-time" lookup.
-        rebalance_dates = full_calendar.asof(month_ends)
+        # We must apply .asof for each date individually.
+        rebalance_dates = month_ends.map(lambda date: full_calendar.asof(date))
         
         # Remove duplicates (if any) and NaTs (if a month had no trading days before it)
         rebalance_dates = rebalance_dates.dropna().unique()
         return pd.DatetimeIndex(rebalance_dates)
 
     # Future extension: add weekly, quarterly logic.
-    elif frequency.upper() == "W":
+    elif frequency.lower().startswith("w"): # Accept 'W', 'weekly', etc.
         raise NotImplementedError("Weekly rebalancing is not yet implemented.")
     else:
         raise ValueError(f"Unsupported rebalancing frequency: {frequency}")
@@ -92,32 +93,30 @@ def apply_publication_lag(
     calendar: pd.DatetimeIndex,
 ) -> pd.DatetimeIndex:
     """
-    Shifts event dates forward by a number of trading days to simulate publication lag.
+    Shifts a series of event dates forward by a number of days and then snaps
+    each date to the next available trading day on the B3 calendar.
 
-    This is a critical function to prevent lookahead bias when using fundamental data,
-    which is published with a delay.
+    This is crucial for ensuring that fundamental data is only considered
+    "known" to the market after its publication lag.
 
     Args:
-        event_dates: A DatetimeIndex or Series of dates when a corporate event
-                     (e.g., earnings release) technically occurred.
-        lag_days: The number of trading days to wait before the information is
-                  considered public knowledge.
-        calendar: The full B3 trading calendar for the period.
+        event_dates: A DatetimeIndex or Series of original event dates (e.g., fiscal period ends).
+        lag_days: The number of calendar days to shift forward.
+        calendar: The canonical B3 trading calendar (a DatetimeIndex).
 
     Returns:
-        A DatetimeIndex with the dates shifted forward to the valid trading day.
+        A DatetimeIndex of the corresponding "actionable" trading dates.
     """
-    calendar_series = calendar.to_series()
+    shifted_dates = pd.to_datetime(event_dates) + pd.Timedelta(days=lag_days)
     
-    # For each event date, find its location in the trading calendar
-    positions = calendar_series.searchsorted(event_dates)
-    
-    # Shift the positions forward by the lag amount
-    # We must ensure we don't go beyond the calendar's boundary
-    shifted_positions = positions + lag_days
-    shifted_positions = shifted_positions[shifted_positions < len(calendar)]
+    # Use the calendar's searchsorted method to find the position of each shifted date.
+    # 'left' means that if a date falls on a non-trading day, it will take the *next* available trading day.
+    positions = calendar.searchsorted(shifted_dates, side='left')
 
-    return calendar[shifted_positions]
+    # Handle dates that fall beyond the calendar's range
+    valid_positions = positions[positions < len(calendar)]
+    
+    return calendar[valid_positions]
 
 
 if __name__ == "__main__":

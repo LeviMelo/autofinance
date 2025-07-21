@@ -1,4 +1,5 @@
 import pandas as pd
+import logging
 
 from ..utils_dates import get_b3_trading_calendar, apply_publication_lag
 
@@ -39,7 +40,7 @@ def align_fundamentals_to_prices(
     # This must encompass both fundamental and price date ranges.
     cal_start = min(fundamentals_df['fiscal_period_end'].min(), price_dates.min())
     cal_end = max(fundamentals_df['fiscal_period_end'].max(), price_dates.max())
-    full_calendar = get_b3_trading_calendar(cal_start, cal_end)
+    calendar = get_b3_trading_calendar(cal_start, cal_end)
     
     # 2. Calculate the 'actionable_date' for each fundamental report
     # We group by ticker to handle cases where different tickers have different
@@ -53,30 +54,49 @@ def align_fundamentals_to_prices(
     if 'publish_date' in fundamentals_df.columns:
         fundamentals_df = fundamentals_df.drop(columns=['publish_date'])
         
-    lagged_df_list = []
-    for ticker, group in fundamentals_df.groupby('ticker'):
+    def _process_group(group):
+        """Processes each ticker group to add the actionable_date."""
         group = group.copy()
-        event_dates = pd.to_datetime(group['fiscal_period_end'])
+        ticker = group['ticker'].iloc[0]
+        # logging.info(f"Processing group for ticker: {ticker}")
         
-        # Use the utility function to shift the dates
-        group['actionable_date'] = apply_publication_lag(
-            event_dates=event_dates,
-            lag_days=publish_lag_days,
-            calendar=full_calendar
+        # Get unique fiscal period end dates to avoid redundant calculations
+        unique_fiscal_dates = pd.Series(group['fiscal_period_end'].unique()).dropna()
+        if unique_fiscal_dates.empty:
+            # logging.warning(f"No valid fiscal dates for {ticker}, skipping.")
+            return None
+        
+        # logging.info(f"  - Ticker {ticker}: Found {len(unique_fiscal_dates)} unique fiscal dates.")
+        
+        # Calculate the actionable dates for these unique fiscal dates
+        actionable_dates = apply_publication_lag(
+            unique_fiscal_dates,
+            publish_lag_days,
+            calendar
         )
-        lagged_df_list.append(group)
+        # logging.info(f"  - Ticker {ticker}: Got {len(actionable_dates)} actionable dates.")
+        
+        # Create a dictionary to map fiscal dates to actionable dates.
+        # This handles cases where some dates are dropped by the lag function.
+        date_map = dict(zip(unique_fiscal_dates, actionable_dates))
+        
+        # Map the actionable dates back to the original group's index
+        group['actionable_date'] = group['fiscal_period_end'].map(date_map)
+        return group.dropna(subset=['actionable_date'])
 
-    if not lagged_df_list:
+    # Apply the processing function to each ticker group
+    processed_groups = fundamentals_df.groupby('ticker', group_keys=False).apply(_process_group)
+
+    if not processed_groups.empty:
+        processed_groups = processed_groups.dropna(subset=['actionable_date'])
+    else:
         raise ValueError("Could not calculate actionable dates for any tickers.")
         
-    lagged_fundamentals = pd.concat(lagged_df_list)
-    lagged_fundamentals = lagged_fundamentals.dropna(subset=['actionable_date'])
-    
     # 3. Create the daily panel by forward-filling
     # We set a multi-index on the data we want to fill forward.
-    lagged_fundamentals = lagged_fundamentals.set_index(['ticker', 'actionable_date'])
-    lagged_fundamentals = lagged_fundamentals.drop(columns=['fiscal_period_end'])
-    lagged_fundamentals = lagged_fundamentals.sort_index()
+    processed_groups = processed_groups.set_index(['ticker', 'actionable_date'])
+    processed_groups = processed_groups.drop(columns=['fiscal_period_end'])
+    processed_groups = processed_groups.sort_index()
 
     # Create the target daily index grid (all tickers for all price dates)
     tickers = fundamentals_df['ticker'].unique()
@@ -87,7 +107,7 @@ def align_fundamentals_to_prices(
     # Reindex our lagged data onto this daily grid.
     # The `groupby('ticker').ffill()` is the key step. It ensures that we
     # forward-fill data for each ticker independently.
-    daily_fundamentals = lagged_fundamentals.reindex(daily_panel_index)
+    daily_fundamentals = processed_groups.reindex(daily_panel_index)
     daily_fundamentals = daily_fundamentals.groupby(level='ticker').ffill()
     
     # Drop any rows that still have NaNs (e.g., assets that IPO'd mid-period)

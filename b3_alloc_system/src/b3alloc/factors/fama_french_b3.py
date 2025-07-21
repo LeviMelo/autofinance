@@ -104,7 +104,9 @@ def build_fama_french_factors(
         
         # Calculate weights for each stock within the portfolio
         portfolio_mkt_cap = (mkt_cap_lagged * mask).sum(axis=1)
-        weights = (mkt_cap_lagged * mask).div(portfolio_mkt_cap, axis=0).fillna(0)
+        
+        # Replace 0 with NaN to avoid division errors; NaN/NaN results in NaN which we fill with 0.
+        weights = (mkt_cap_lagged * mask).div(portfolio_mkt_cap.replace(0, np.nan), axis=0).fillna(0)
         
         # Portfolio return is the sum of weighted constituent returns
         portfolio_returns[portfolio_name] = (returns_df * weights).sum(axis=1)

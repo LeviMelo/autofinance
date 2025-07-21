@@ -1,0 +1,64 @@
+meta:
+  portfolio_name: B3_Allocation_System_Test
+  base_currency: BRL
+
+data:
+  start: "2021-01-01"
+  end: "2023-12-31"
+  tickers_file: "config/universe_small.csv"
+  selic_series: 11
+  publish_lag_days: 90
+
+universe:
+  include_fx_factor: false
+  fx_series_id: 1
+  asset_flags: {}
+
+risk_engine:
+  garch:
+    dist: student-t
+    min_obs: 252
+    refit_freq_days: 63
+  dcc:
+    a_init: 0.03
+    b_init: 0.96
+  shrinkage:
+    method: ledoit_wolf_constant_corr
+    floor: 0.0
+
+return_engine:
+  factor:
+    lookback_days: 756
+    include_alpha: true
+    premium_estimator: expanding_mean
+  var:
+    max_lag: 5
+    criterion: bic
+    log_returns: true
+
+black_litterman:
+  tau: 0.025
+  confidence:
+    method: user_scaled
+    factor_scaler: 1.0
+    var_scaler: 1.0
+  qualitative_views_file: null
+
+optimizer:
+  objective: max_sharpe
+  long_only: true
+  name_cap: 0.20
+  sector_cap: 0.30
+  turnover_penalty_bps: 5
+
+tax:
+  enable: false
+  brokerage_fee_bps: 0
+
+backtest:
+  lookback_years: 3
+  rebalance: monthly
+  start: "2022-01-01"
+  end: "2023-12-31"
+  costs_bps: 10
+  initial_capital: 1000000.0 

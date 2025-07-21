@@ -4,64 +4,54 @@ import numpy as np
 def compute_returns(
     prices_df: pd.DataFrame,
     risk_free_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
     price_col: str = 'adj_close'
 ) -> pd.DataFrame:
     """
-    Computes daily simple, log, and excess returns for a set of assets.
-
-    The input `prices_df` is expected to be in long format, but is pivoted to
-    wide format for efficient vectorized calculations. The output is returned
-    in a wide format.
+    Computes various return series from wide-format price data.
 
     Args:
-        prices_df: A long-format DataFrame of daily equity prices, with columns
-                   ['date', 'ticker', 'adj_close', ...].
-        risk_free_df: A DataFrame of daily risk-free rates, indexed by date,
-                      with a column 'rf_daily'.
-        price_col: The column name in `prices_df` to use for returns calculation.
-                   Defaults to 'adj_close'.
+        prices_df: Wide-format DataFrame of daily prices, index=date, columns=ticker.
+        risk_free_df: DataFrame of daily and annualized risk-free rates.
+        benchmark_df: DataFrame of the benchmark index price series.
+        price_col: The column to use for price data (default: 'adj_close').
 
     Returns:
-        A dictionary of DataFrames, each indexed by date with tickers as columns:
-        - 'simple': Daily simple returns.
-        - 'log': Daily log returns (used for modeling).
-        - 'excess_simple': Simple returns minus the daily risk-free rate.
-        - 'excess_log': Log returns minus the daily risk-free rate.
+        A dictionary of DataFrames containing simple, log, excess simple,
+        and excess log returns, plus market returns.
     """
-    if prices_df.empty or risk_free_df.empty:
-        raise ValueError("Input prices_df or risk_free_df cannot be empty.")
-
-    # 1. Pivot prices from long to wide format for vectorized calculations
-    # This creates a DataFrame with dates as the index and tickers as columns.
-    prices_wide = prices_df.pivot(index='date', columns='ticker', values=price_col)
-
-    # 2. Align risk-free series to the price index
-    # This ensures we have a matching risk-free rate for every day of prices.
-    rf_aligned, prices_wide = risk_free_df['rf_daily'].align(prices_wide, join='right')
     
-    # 3. Calculate simple and log returns
-    # The `pct_change()` method is equivalent to (p_t / p_{t-1}) - 1
+    # The input prices_df is already in wide format, no pivot needed.
+    prices_wide = prices_df
+
+    # --- Equity Returns ---
     simple_returns = prices_wide.pct_change()
-    
-    # Log returns are calculated as the difference of the natural logarithm of prices
     log_returns = np.log(prices_wide / prices_wide.shift(1))
-
-    # The first row will be NaN after pct_change/shift, which is expected.
-    # We will handle this in downstream models.
-
-    # 4. Calculate excess returns
-    # We can subtract the risk-free rate series from every column of the returns matrix.
-    excess_simple_returns = simple_returns.subtract(rf_aligned, axis=0)
-    excess_log_returns = log_returns.subtract(rf_aligned, axis=0)
     
-    print("Successfully computed simple, log, and excess returns.")
+    # Align risk-free rate to the returns index
+    rf_daily = risk_free_df['rf_daily'].reindex(simple_returns.index).ffill()
     
-    return {
-        'simple': simple_returns,
-        'log': log_returns,
-        'excess_simple': excess_simple_returns,
-        'excess_log': excess_log_returns
+    # Calculate excess returns
+    excess_simple_returns = simple_returns.subtract(rf_daily, axis=0)
+    excess_log_returns = log_returns.subtract(rf_daily, axis=0)
+    
+    # --- Benchmark Market Returns ---
+    market_simple_returns = benchmark_df[price_col].pct_change()
+    market_log_returns = np.log(benchmark_df[price_col] / benchmark_df[price_col].shift(1))
+    market_excess_returns = market_simple_returns - rf_daily
+    
+    returns_bundle = {
+        "simple": simple_returns.dropna(how='all'),
+        "log": log_returns.dropna(how='all'),
+        "simple_excess": excess_simple_returns.dropna(how='all'),
+        "log_excess": excess_log_returns.dropna(how='all'),
+        "market_simple": market_simple_returns.dropna(),
+        "market_log": market_log_returns.dropna(),
+        "market_excess": market_excess_returns.dropna()
     }
+    
+    print("Successfully computed all return series.")
+    return returns_bundle
 
 if __name__ == '__main__':
     # Standalone test for the returns module

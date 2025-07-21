@@ -25,14 +25,14 @@ class BacktestEngine:
     def __init__(self, config: Config, data_stores: Dict[str, pd.DataFrame]):
         self.config = config
         self.data_stores = data_stores
-        self.ledger = PortfolioLedger(initial_capital=config.backtest.get('initial_capital', 1_000_000.0))
+        self.ledger = PortfolioLedger(initial_capital=config.backtest.initial_capital)
 
     def run_backtest(self) -> pd.DataFrame:
         """
         Executes the main backtesting loop.
         """
         cfg_bt = self.config.backtest
-        rebalance_dates = generate_rebalance_dates(cfg_bt['start'], cfg_bt['end'], cfg_bt['rebalance'])
+        rebalance_dates = generate_rebalance_dates(cfg_bt.start, cfg_bt.end, cfg_bt.rebalance)
         prices_wide = self.data_stores['prices'].pivot(index='date', columns='ticker', values='adj_close')
 
         print(f"Starting backtest from {rebalance_dates[0].date()} to {rebalance_dates[-1].date()}...")
@@ -68,7 +68,7 @@ class BacktestEngine:
                     trade_list,
                     current_prices,
                     rebalance_date,
-                    cost_per_trade_bps=cfg_bt['costs_bps']
+                    cost_per_trade_bps=cfg_bt.costs_bps
                 )
             else:
                 print("  -> No trades needed to reach target allocation.")
@@ -84,7 +84,7 @@ class BacktestEngine:
         Executes the full data prep, risk, return, and optimization pipeline.
         """
         cfg = self.config
-        lookback_start = rebalance_date - pd.DateOffset(years=cfg.backtest['lookback_years'])
+        lookback_start = rebalance_date - pd.DateOffset(years=cfg.backtest.lookback_years)
         
         # --- Data Slicing and Universe ---
         history_prices = self.data_stores['prices'][

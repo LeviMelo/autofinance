@@ -48,8 +48,12 @@ def build_covariance_matrix(
     
     # --- 2. Univariate GARCH Fitting (Parallelized) ---
     print(f"Fitting GARCH(1,1) for {model_input_returns.shape[1]} series (assets + FX)...")
+    # Fit GARCH models in parallel
     garch_results = Parallel(n_jobs=n_jobs)(
-        delayed(fit_garch_model)(model_input_returns[ticker].dropna(), config.garch.dist)
+        delayed(fit_garch_model)(
+            model_input_returns[ticker].dropna(),
+            "student-t"  # Hardcode the distribution to isolate the error
+        )
         for ticker in model_input_returns.columns
     )
     

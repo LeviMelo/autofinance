@@ -33,9 +33,15 @@ def fit_garch_model(
     # Rescaling by 100 can help with optimizer convergence.
     scaled_returns = returns_series * 100
 
-    # Select the distribution based on the config
-    distribution = Normal() if dist == 'gaussian' else StudentsT()
-    
+    # The arch library is very particular about the distribution name.
+    dist_name = str(dist).lower()
+    if 'student' in dist_name:
+        dist_name = 'student-t'
+    elif 'gaussian' in dist_name or 'normal' in dist_name:
+        dist_name = 'gaussian'
+    else:
+        dist_name = 'student-t' # Default
+
     # Define the GARCH(1,1) model
     model = arch_model(
         scaled_returns,
@@ -43,7 +49,7 @@ def fit_garch_model(
         p=1,
         o=0,
         q=1,
-        dist=distribution
+        dist=dist_name
     )
     
     try:
