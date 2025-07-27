@@ -19,7 +19,7 @@ class DataConfig(BaseModel):
 
 class GarchConfig(BaseModel):
     """Configuration for GARCH model in the Risk Engine."""
-    dist: str = "student-t"  # Changed from Literal["gaussian", "student-t"]
+    dist: str = "studentst"  # Changed from Literal["gaussian", "studentst"]
     min_obs: int = Field(252, ge=252)
     refit_freq_days: int = Field(21, gt=0)
 

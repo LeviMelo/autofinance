@@ -62,7 +62,7 @@ def main():
     )
     
     # We need simple returns
-    all_returns = compute_returns(prices_df_long, rf_df)
+    all_returns = compute_returns(prices_wide, rf_df, benchmark_df=ibov_df)
     simple_returns_wide = all_returns['simple']
     
     # We need market excess returns for the 'MKT' factor

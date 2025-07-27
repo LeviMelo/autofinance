@@ -104,7 +104,13 @@ class BacktestEngine:
         try:
             log_returns = self.data_stores['log_returns'].loc[lookback_start:rebalance_date, liquid_universe]
             
-            sigma_final, diags = build_covariance_matrix(log_returns.dropna(), cfg.risk_engine)
+            # --- FIX STARTS HERE ---
+            # Convert the Pydantic config object to a simple dictionary BEFORE passing it.
+            # This ensures that only primitive, pickle-safe data types are sent downstream.
+            risk_config_dict = cfg.risk_engine.model_dump()
+            sigma_final, diags = build_covariance_matrix(log_returns.dropna(), risk_config_dict)
+            # --- FIX ENDS HERE ---
+
             final_universe = sorted(sigma_final.columns.tolist())
             
             # --- View Generation ---
@@ -132,7 +138,8 @@ class BacktestEngine:
                     {'ff_view': {'res_var': ff_betas['residual_variance']}, 'var_view': var_diags},
                     cfg.black_litterman
                 )
-                mu_posterior = calculate_posterior_returns(pi_prior, sigma_final, P, Q, Omega, cfg.black_litterman['tau'])
+                # Corrected inconsistent dictionary access to attribute access for robustness
+                mu_posterior = calculate_posterior_returns(pi_prior, sigma_final, P, Q, Omega, cfg.black_litterman.tau)
 
             # --- Optimization ---
             w_var = cp.Variable(len(final_universe))

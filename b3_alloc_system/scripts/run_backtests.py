@@ -124,7 +124,7 @@ def main():
             factors_slice = data_stores['factor_panel_daily'].loc[lookback_start:rebalance_date]
             fx_slice = data_stores['fx_usd_brl_daily'][['USD_BRL_log_return']].loc[lookback_start:rebalance_date]
             
-            # Risk Model (FX-aware)
+            # Risk Model (FX-aware) 
             sigma, risk_diags = build_covariance_matrix(returns_slice, cfg.risk_engine, fx_returns_df=fx_slice)
             final_universe = sorted(sigma.columns.tolist())
             

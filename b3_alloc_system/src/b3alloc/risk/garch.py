@@ -1,11 +1,11 @@
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any
 from arch import arch_model
 from arch.univariate import GARCH, StudentsT, Normal
 
 # Define type hints for clarity
-FitResult = any # The specific type is complex, 'any' is sufficient here
+FitResult = Any # The specific type is complex, 'any' is sufficient here
 ForecastResult = Optional[float]
 
 def fit_garch_model(
@@ -17,7 +17,7 @@ def fit_garch_model(
 
     Args:
         returns_series: A pandas Series of demeaned log excess returns for one asset.
-        dist: The distribution to use for the innovations ('gaussian' or 'student-t').
+        dist: The distribution to use for the innovations ('gaussian' or 'studentst').
 
     Returns:
         A tuple containing:
@@ -33,14 +33,7 @@ def fit_garch_model(
     # Rescaling by 100 can help with optimizer convergence.
     scaled_returns = returns_series * 100
 
-    # The arch library is very particular about the distribution name.
-    dist_name = str(dist).lower()
-    if 'student' in dist_name:
-        dist_name = 'student-t'
-    elif 'gaussian' in dist_name or 'normal' in dist_name:
-        dist_name = 'gaussian'
-    else:
-        dist_name = 'student-t' # Default
+    dist_name = dist.lower()
 
     # Define the GARCH(1,1) model
     model = arch_model(

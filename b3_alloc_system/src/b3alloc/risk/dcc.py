@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any
 from arch import arch_model
 
 # Define type hints for clarity
-DccFitResult = any # The specific type is complex
+DccFitResult = Any # The specific type is complex
 ForecastedCorrMatrix = Optional[np.ndarray]
 
 def fit_dcc_model(

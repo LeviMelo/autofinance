@@ -70,7 +70,7 @@ def generate_rebalance_dates(
 
     if frequency.lower().startswith("m"): # Accept 'M', 'monthly', etc.
         # Get the last day of all months in the period
-        month_ends = pd.date_range(start=start_date, end=end_date, freq="M")
+        month_ends = pd.date_range(start=start_date, end=end_date, freq="ME")
         
         # Find the closest preceding trading day for each month-end.
         # We must apply .asof for each date individually.

@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from joblib import Parallel, delayed
 
 from .garch import fit_garch_model
 from .dcc import fit_dcc_model
@@ -10,58 +9,37 @@ from ..config import RiskEngineConfig
 
 def build_covariance_matrix(
     returns_df: pd.DataFrame,
-    config: RiskEngineConfig,
+    config: RiskEngineConfig, # <-- Reverted to expect the Pydantic object
     fx_returns_df: Optional[pd.DataFrame] = None
 ) -> Tuple[pd.DataFrame, Dict]:
     """
-    Orchestrates the construction of the forward-looking covariance matrix, now
-    with optional FX factor integration.
-
-    If an FX return series is provided, it is included in the GARCH-DCC
-    estimation to capture its volatility and correlations with other assets.
-    It is then removed before the final matrix is returned to the optimizer.
-
-    Args:
-        returns_df: A wide-format DataFrame of log excess returns for the assets.
-        config: The RiskEngineConfig object.
-        fx_returns_df: An optional single-column DataFrame of FX log returns.
-
-    Returns:
-        A tuple containing:
-        - A pandas DataFrame representing the final, shrunk NxN asset covariance matrix.
-        - A dictionary containing diagnostic information.
+    Orchestrates the construction of the forward-looking covariance matrix.
     """
     print("Building dynamic covariance matrix (FX-aware)...")
     if returns_df.isnull().all().any():
         raise ValueError("A column in the returns_df is all NaN. Check input data.")
 
-    # --- 1. Combine Asset and FX Returns ---
     model_input_returns = returns_df.copy()
     fx_col_name = None
     if fx_returns_df is not None and not fx_returns_df.empty:
-        # Align and combine
         fx_col_name = fx_returns_df.columns[0]
         model_input_returns = pd.concat([returns_df, fx_returns_df], axis=1).dropna(axis=0, how='any')
         print(f"  -> Including '{fx_col_name}' in risk estimation.")
 
-    n_jobs = -1
-    
-    # --- 2. Univariate GARCH Fitting (Parallelized) ---
     print(f"Fitting GARCH(1,1) for {model_input_returns.shape[1]} series (assets + FX)...")
-    # Fit GARCH models in parallel
-    garch_results = Parallel(n_jobs=n_jobs)(
-        delayed(fit_garch_model)(
+    
+    # Using a simple, reliable sequential loop
+    garch_results = [
+        fit_garch_model(
             model_input_returns[ticker].dropna(),
-            "student-t"  # Hardcode the distribution to isolate the error
+            config.garch.dist # Access the attribute directly from the Pydantic object
         )
         for ticker in model_input_returns.columns
-    )
+    ]
     
-    # --- 3. Process GARCH results ---
     successful_series = []
     standardized_residuals = {}
     variance_forecasts = {}
-
     for series_name, (fit_result, var_forecast) in zip(model_input_returns.columns, garch_results):
         if fit_result and var_forecast:
             successful_series.append(series_name)
@@ -76,7 +54,6 @@ def build_covariance_matrix(
         
     residuals_df = pd.DataFrame(standardized_residuals).reindex(model_input_returns.index).loc[:, successful_series]
 
-    # --- 4. Multivariate DCC Fitting ---
     print(f"Fitting DCC(1,1) on {residuals_df.shape[1]} standardized residual series...")
     dcc_fit, corr_forecast = fit_dcc_model(residuals_df)
     
@@ -85,16 +62,12 @@ def build_covariance_matrix(
 
     corr_forecast_df = pd.DataFrame(corr_forecast, index=successful_series, columns=successful_series)
 
-    # --- 5. Reconstruct Dynamic Covariance (H_t) ---
     vol_forecasts = np.sqrt(pd.Series(variance_forecasts))
     D_t = np.diag(vol_forecasts)
     H_t = D_t @ corr_forecast_df.values @ D_t
     H_t_df = pd.DataFrame(H_t, index=successful_series, columns=successful_series)
 
-    # --- 6. Ledoit-Wolf Shrinkage Integration ---
     print("Applying Ledoit-Wolf shrinkage to stabilize the GARCH-DCC matrix...")
-    # We shrink the GARCH-DCC forecast (H_t) towards a stable target,
-    # using the historical returns to estimate the optimal shrinkage intensity (delta).
     shrunk_cov_matrix, shrinkage_delta = apply_ledoit_wolf_shrinkage(
         sample_cov=H_t_df.values,
         returns_array=model_input_returns[successful_series].values
@@ -105,9 +78,6 @@ def build_covariance_matrix(
         columns=successful_series
     )
     
-    # --- 7. Finalize and Drop FX Factor ---
-    # As per spec, drop the FX factor row/col from the final matrix
-    # that goes to the optimizer.
     final_asset_cov_df = final_shrunk_cov_full_df
     if fx_col_name and fx_col_name in final_asset_cov_df.columns:
         final_asset_cov_df = final_asset_cov_df.drop(index=fx_col_name, columns=fx_col_name)
@@ -119,10 +89,11 @@ def build_covariance_matrix(
         'num_series_in': model_input_returns.shape[1],
         'num_assets_out': final_asset_cov_df.shape[1],
         'shrinkage_intensity_delta': shrinkage_delta,
-        'full_covariance_matrix_with_fx': final_shrunk_cov_full_df # Store for attribution
+        'full_covariance_matrix_with_fx': final_shrunk_cov_full_df
     }
     
     return final_asset_cov_df, diagnostics
+
 
 if __name__ == '__main__':
     from ..config import load_config
@@ -156,7 +127,7 @@ if __name__ == '__main__':
     try:
         # --- WHEN ---
         # Run the engine with the FX factor
-        sigma, diags = build_covariance_matrix(test_returns, mock_config, fx_returns_df=fx_returns)
+        sigma, diags = build_covariance_matrix(test_returns, mock_config.model_dump(), fx_returns_df=fx_returns)
 
         # --- THEN ---
         print("\n--- Output ---")

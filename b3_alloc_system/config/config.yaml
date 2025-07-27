@@ -16,7 +16,7 @@ universe:
 
 risk_engine:
   garch:
-    dist: student-t
+    dist: studentst
     min_obs: 252
     refit_freq_days: 63
   dcc:
