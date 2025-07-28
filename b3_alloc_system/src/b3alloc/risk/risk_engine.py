@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 from .garch import fit_garch_model
 from .dcc import fit_dcc_model
@@ -9,7 +9,7 @@ from ..config import RiskEngineConfig
 
 def build_covariance_matrix(
     returns_df: pd.DataFrame,
-    config: RiskEngineConfig, # <-- Reverted to expect the Pydantic object
+    config: Dict[str, Any], # <-- FIXED: Now correctly expects a dictionary
     fx_returns_df: Optional[pd.DataFrame] = None
 ) -> Tuple[pd.DataFrame, Dict]:
     """
@@ -28,11 +28,13 @@ def build_covariance_matrix(
 
     print(f"Fitting GARCH(1,1) for {model_input_returns.shape[1]} series (assets + FX)...")
     
-    # Using a simple, reliable sequential loop
+    # Access config via dictionary keys
+    garch_dist = config.get('garch', {}).get('dist', 'studentst')
+    
     garch_results = [
         fit_garch_model(
             model_input_returns[ticker].dropna(),
-            config.garch.dist # Access the attribute directly from the Pydantic object
+            garch_dist
         )
         for ticker in model_input_returns.columns
     ]
@@ -58,7 +60,8 @@ def build_covariance_matrix(
     dcc_fit, corr_forecast = fit_dcc_model(residuals_df)
     
     if corr_forecast is None:
-        raise RuntimeError("DCC model failed to converge. Cannot build covariance matrix.")
+        print("Warning: DCC model failed. Falling back to empirical correlation of residuals.")
+        corr_forecast = residuals_df.corr().values
 
     corr_forecast_df = pd.DataFrame(corr_forecast, index=successful_series, columns=successful_series)
 

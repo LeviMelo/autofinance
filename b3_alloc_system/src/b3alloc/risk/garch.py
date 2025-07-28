@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 from typing import Tuple, Optional, Any
 from arch import arch_model
-from arch.univariate import GARCH, StudentsT, Normal
 
 # Define type hints for clarity
 FitResult = Any # The specific type is complex, 'any' is sufficient here

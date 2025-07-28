@@ -14,29 +14,38 @@ import logging
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)   # ADD
 
-yf.enable_debug_mode()
+#yf.enable_debug_mode()
+# Keep your own INFO logs but silence yfinance DEBUG/INFO
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
+logging.getLogger("yfinance").setLevel(logging.WARNING)
 
-@functools.lru_cache(maxsize=128)
-def _get_cvm_code_from_b3(ticker: str) -> Optional[str]:
-   """
-   Resolve a B3 ticker (e.g. 'PETR4') to its CVM code via the nightly CSV:
-     https://arquivos.b3.com.br/emissores/EmissoresListados.csv
-   """
-   base = ticker.split(".")[0].upper()
-   url = "https://arquivos.b3.com.br/emissores/EmissoresListados.csv"
-   try:
-       resp = requests.get(url, timeout=30)
-       resp.raise_for_status()
-       for line in resp.text.splitlines():
-           cols = [c.strip() for c in line.split(";")]
-           # CSV columns: Ticker;CodCVM;...
-           if len(cols) >= 2 and cols[0].upper() == base and cols[1].isdigit():
-               return cols[1]
-   except Exception as e:
-       logging.warning(f"Failed to fetch CVM code for {base} from CSV: {e}")
-   logging.warning(f"CVM code not found for {base} via CSV.")
-   return None
+@functools.lru_cache(maxsize=256)
+def _get_cvm_code_from_b3(ticker: str) -> str | None:
+    """
+    Map B3 ticker (e.g. 'PETR4') → numeric CodCVM using the
+    HTML table on the 'Empresas Listadas' page.
+
+    Returns None if the ticker is not found.
+    """
+    base = ticker.split(".")[0].upper()
+
+    url = ("https://bvmf.bmfbovespa.com.br/pt_br/"
+           "produtos-e-servicos/negociacao/acoes/empresas-listadas.htm")
+
+    try:
+        html = requests.get(url, timeout=30).text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # each row with ticker has <a ... data-cd-emitente="1234">TICKER</a>
+        for tag in soup.select("a[data-cd-emitente]"):
+            if tag.text.strip().upper() == base:
+                return tag["data-cd-emitente"]
+
+    except Exception as exc:
+        logging.warning(f"CVM code lookup failed for {base}: {exc}")
+
+    logging.warning(f"CVM code not found for {base}.")
+    return None
 
 
 def _fetch_shares_outstanding_from_cvm(ticker_sa: str) -> Optional[pd.DataFrame]:

@@ -2,6 +2,7 @@ import pandas as pd
 from pathlib import Path
 import sys
 from datetime import datetime
+import argparse
 
 # Add the source directory to the Python path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -21,6 +22,12 @@ def main():
     Main function to run the entire data ingestion and processing pipeline.
     """
     print("--- Starting Data Update and Processing ---")
+    
+    # --- FIXED: Use argparse to accept a config file path ---
+    parser = argparse.ArgumentParser(description="Download and process data based on a config file.")
+    parser.add_argument("--config", type=str, required=True, help="Path to the portfolio YAML configuration file.")
+    args = parser.parse_args()
+    # ----------------------------------------------------
     
     project_root = Path(__file__).resolve().parents[1]
     

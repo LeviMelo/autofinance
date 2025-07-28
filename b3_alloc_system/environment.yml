@@ -42,6 +42,7 @@ dependencies:
   # Pip-specific packages
   - pip
   - pip:
+      - mvgarch
       # This line is crucial: it installs your project's source code
       # in "editable" mode, so changes to your .py files are
       # immediately available without reinstalling.

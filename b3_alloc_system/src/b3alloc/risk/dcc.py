@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 from typing import Tuple, Optional, Any
-from arch import arch_model
+from mvgarch.ugarch import UGARCH
+from mvgarch.mgarch import DCCGARCH
 
 # Define type hints for clarity
 DccFitResult = Any # The specific type is complex
@@ -11,67 +12,47 @@ def fit_dcc_model(
     standardized_residuals: pd.DataFrame
 ) -> Tuple[Optional[DccFitResult], ForecastedCorrMatrix]:
     """
-    Fits a DCC(1,1)-GARCH(1,1) model to a set of standardized residuals.
-
-    This implements the second stage of the DCC-GARCH process. By feeding the
-    model pre-standardized residuals, we focus the estimation on the DCC
-    parameters that govern the time-varying correlations.
-
-    Args:
-        standardized_residuals: A DataFrame where each column is an asset's
-                                time series of standardized residuals (returns
-                                divided by conditional volatility from GARCH).
-                                The index is the date.
-
-    Returns:
-        A tuple containing:
-        - The fitted DCC model result object (or None if convergence fails).
-        - The one-step-ahead forecasted NxN correlation matrix (or None if fails).
+    Fits a DCC(1,1)-GARCH(1,1) model using the mvgarch library.
     """
     if standardized_residuals.isnull().values.any():
         print("Warning: DCC input contains NaNs. Filling with 0 before fitting.")
         standardized_residuals = standardized_residuals.fillna(0)
 
     num_assets = standardized_residuals.shape[1]
+    asset_names = standardized_residuals.columns.tolist()
+    
     if num_assets < 2:
         print("Warning: DCC model requires at least 2 assets. Skipping.")
         return None, None
     
-    # Define the GARCH specification for the DCC model.
-    # The 'arch' library is designed to handle multiple series by passing
-    # the entire DataFrame of residuals to the model constructor.
-    # The original loop-based construction was incorrect.
-    vol_model = arch_model(
-        standardized_residuals, 
-        vol='Garch', 
-        p=1, q=1, 
-        cov_type='DCC', 
-        cov_p=1, cov_q=1
-    )
-
     try:
-        # Fit the model. Scaling is not needed as residuals are already standardized.
-        # Options can be tuned for better convergence if needed.
-        fit_result = vol_model.fit(disp='off', options={'maxiter': 500})
+        ugarchs = [UGARCH(order=(1, 1)) for _ in range(num_assets)]
         
-        if not fit_result.convergence_flag == 0:
-            print(f"Warning: DCC model did not converge. Status: {fit_result.convergence_flag}")
-            return None, None
+        dcc = DCCGARCH()
+        dcc.spec(ugarch_objs=ugarchs, returns=standardized_residuals)
+        
+        # FIXED: Removed the unsupported 'disp' argument
+        fit_result = dcc.fit()
+
+        dcc.forecast(n_ahead=1)
+        
+        forecasted_corr_3d = dcc.fc_cor
+        
+        if forecasted_corr_3d is None or forecasted_corr_3d.shape != (num_assets, num_assets, 1):
+            raise ValueError(f"Unexpected DCC forecast shape; expected {(num_assets, num_assets, 1)}")
+
+        corr_matrix = forecasted_corr_3d[:, :, 0]
+        
+        if dcc.assets != asset_names:
+            print("Warning: DCC model reordered assets. Re-indexing correlation matrix.")
+            temp_df = pd.DataFrame(corr_matrix, index=dcc.assets, columns=dcc.assets)
+            corr_matrix = temp_df.reindex(index=asset_names, columns=asset_names).values
+
+        return fit_result, corr_matrix
 
     except Exception as e:
-        print(f"Warning: DCC model failed to fit. Error: {e}")
+        print(f"Warning: mvgarch DCC model failed to fit. Error: {e}")
         return None, None
-        
-    # Forecast one step ahead
-    forecast = fit_result.forecast(horizon=1, reindex=False)
-    
-    # The forecasted correlation matrix is nested in the output.
-    # The structure is forecast.correlation['h.1'][date_index]
-    # We want the NxN matrix for the single forecasted date.
-    forecast_date = forecast.correlation.index[0]
-    corr_matrix = forecast.correlation.loc[forecast_date].values
-    
-    return fit_result, corr_matrix
 
 
 if __name__ == '__main__':

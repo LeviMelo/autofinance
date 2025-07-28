@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from typing import Tuple, Dict, List, Optional
-from joblib import Parallel, delayed
 
 from ..config import FactorViewConfig
 
@@ -13,39 +12,24 @@ def estimate_factor_betas(
 ) -> Tuple[Optional[pd.Series], Optional[Dict]]:
     """
     Estimates factor betas for a single asset via OLS regression.
-
-    Dynamically includes an FX factor in the regression if it is provided.
-
-    Args:
-        asset_excess_returns: A Series of daily excess returns for one asset.
-        base_factor_returns: A DataFrame with daily returns for Mkt_excess, SMB, and HML.
-        fx_factor_return: An optional Series of daily FX factor returns.
-
-    Returns:
-        A tuple containing:
-        - A Series of estimated betas (including alpha and potentially fx_beta).
-        - A dictionary of regression diagnostics (R-squared, p-values).
     """
-    # Combine all potential regressors
     all_factors = [base_factor_returns]
     if fx_factor_return is not None:
         all_factors.append(fx_factor_return)
         
-    # Align all data and drop any days with missing values
     data = pd.concat([asset_excess_returns] + all_factors, axis=1).dropna()
     
-    if data.shape[0] < 60: # Not enough data for a meaningful regression
+    if data.shape[0] < 60:
         return None, None
 
     Y = data.iloc[:, 0]
     X = data.iloc[:, 1:]
-    X = sm.add_constant(X) # Add a constant to estimate alpha
+    X = sm.add_constant(X)
 
     model = sm.OLS(Y, X)
     results = model.fit()
     
-    betas = results.params
-    betas = betas.rename({'const': 'alpha'})
+    betas = results.params.rename({'const': 'alpha'})
     
     diagnostics = {
         'r_squared': results.rsquared_adj,
@@ -62,56 +46,66 @@ def estimate_factor_premia(
 ) -> pd.Series:
     """
     Estimates the forward-looking factor premia.
-    Now handles an arbitrary number of factors.
     """
     TRADING_DAYS_PER_YEAR = 252
     
     if estimator == "long_term_mean":
         daily_premia = factor_returns.mean()
-        annual_premia = daily_premia * TRADING_DAYS_PER_YEAR
-        return annual_premia
+    elif estimator == "expanding_mean":
+        daily_premia = factor_returns.expanding().mean().iloc[-1]
+    elif estimator == "ewm":
+        daily_premia = factor_returns.ewm(span=TRADING_DAYS_PER_YEAR, adjust=False).mean().iloc[-1]
     else:
         raise NotImplementedError(f"Estimator '{estimator}' not implemented.")
-
+        
+    annual_premia = daily_premia * TRADING_DAYS_PER_YEAR
+    return annual_premia
 
 def create_fama_french_view(
     asset_returns_df: pd.DataFrame,
     factor_returns_df: pd.DataFrame,
     config: FactorViewConfig,
     fx_returns_df: Optional[pd.DataFrame] = None,
-    asset_fx_sensitivity: Optional[Dict[str, bool]] = None
-) -> Tuple[pd.DataFrame, pd.Series]:
+    asset_fx_sensitivity: Optional[Dict[str, Dict[str, bool]]] = None
+) -> Tuple[Tuple[pd.DataFrame, pd.Series], Dict]:
     """
     Generates expected excess returns based on a dynamic factor model.
     """
     print("Generating return views from factor model (FX-aware)...")
-    n_jobs = -1
     asset_fx_sensitivity = asset_fx_sensitivity or {}
+    TRADING_DAYS_PER_YEAR = 252 
 
-    # --- 1. Estimate betas for all assets in parallel ---
+    # 1. Estimate betas for all assets sequentially
     print(f"Estimating factor betas for {asset_returns_df.shape[1]} assets...")
-    beta_results = Parallel(n_jobs=n_jobs)(
-        delayed(estimate_factor_betas)(
+    
+    beta_results = []
+    for ticker in asset_returns_df.columns:
+        is_sensitive = asset_fx_sensitivity.get(ticker, {}).get('fx_sensitive', False)
+        fx_series_for_asset = fx_returns_df.iloc[:, 0] if fx_returns_df is not None and is_sensitive else None
+        
+        betas, diags = estimate_factor_betas(
             asset_returns_df[ticker],
             factor_returns_df,
-            fx_returns_df.iloc[:, 0] if fx_returns_df is not None and asset_fx_sensitivity.get(ticker, False) else None
+            fx_series_for_asset
         )
-        for ticker in asset_returns_df.columns
-    )
-    
+        beta_results.append((betas, diags))
+
     all_betas = {}
+    all_diags_res_var = {}
     for ticker, (betas, diags) in zip(asset_returns_df.columns, beta_results):
         if betas is not None:
             all_betas[ticker] = betas
+            if diags and 'residual_variance' in diags:
+                all_diags_res_var[ticker] = diags['residual_variance']
             
     if not all_betas:
         raise RuntimeError("Failed to estimate betas for any asset.")
         
-    betas_df = pd.DataFrame(all_betas).T.fillna(0) # Fill missing betas (e.g., FX beta for non-sensitive assets) with 0
+    betas_df = pd.DataFrame(all_betas).T.fillna(0)
+    final_diags = {'residual_variance': pd.Series(all_diags_res_var)}
 
-    # --- 2. Estimate historical factor premia ---
+    # 2. Estimate historical factor premia
     print("Estimating historical factor premia (including FX)...")
-    # Combine all possible factors for premia calculation
     full_factor_panel = factor_returns_df.copy()
     if fx_returns_df is not None:
         full_factor_panel = pd.concat([full_factor_panel, fx_returns_df], axis=1)
@@ -120,25 +114,24 @@ def create_fama_french_view(
         full_factor_panel.dropna(), config.premium_estimator
     )
     
-    # --- 3. Project expected returns ---
+    # 3. Project expected returns
     print("Projecting expected returns from betas and premia...")
     factor_betas = betas_df.drop(columns=['alpha'], errors='ignore')
     
-    # Align factor betas and premia columns before dot product
     aligned_betas, aligned_premia = factor_betas.align(factor_premia, join='left', axis=1)
-    aligned_betas = aligned_betas.fillna(0) # Ensure any non-estimated betas are 0
+    aligned_betas = aligned_betas.fillna(0)
     aligned_premia = aligned_premia.fillna(0)
     
     expected_returns = aligned_betas.dot(aligned_premia)
     
     if config.include_alpha and 'alpha' in betas_df.columns:
-        expected_returns += betas_df['alpha']
+        annualized_alpha = betas_df['alpha'] * TRADING_DAYS_PER_YEAR
+        expected_returns += annualized_alpha
     
     expected_returns.name = "ff_expected_returns"
     
     print("Successfully generated FX-aware Fama-French return view.")
-    return betas_df, expected_returns
-
+    return (betas_df, expected_returns), final_diags
 
 if __name__ == '__main__':
     from ..config import load_config
